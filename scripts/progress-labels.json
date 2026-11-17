@@ -16,6 +16,10 @@
     "failed": "未通过"
   },
   "acceptance": "待试玩",
+  "onlineColumn": "在线试玩",
+  "onlinePending": "待上线",
+  "onlineUnverified": "已发布，待验证",
+  "onlinePlay": "▶ 在线试玩",
   "none": "—",
   "localOnly": "仅本地",
   "footer": "\nHTML 文件位于仓库外的交付目录 `game-recreations-deliveries/`（与本仓库同级），不随仓库发布；可按各游戏 README 自行构建。\n"

@@ -13,6 +13,7 @@ param(
     [ValidateSet('toast', 'fail', 'log')]
     [string]$NotifyMode = 'toast',
     [switch]$NoPush,
+    [int]$PagesWaitMinutes = 12,
     # Overrides used by scripts\simulate.ps1. Leave empty for real runs.
     [string]$RepoRoot = '',
     [string]$TreesRoot = '',
@@ -81,7 +82,7 @@ function Get-State {
     $path = Join-Path $stateDir "$Id.json"
     $s = @{
         status = 'pending'; offline = 'pending'; spent = 0.0; sessions = 0
-        commit = ''; push = 'none'; reason = ''; deliveredAt = ''
+        commit = ''; push = 'none'; reason = ''; deliveredAt = ''; pages = 'none'; pagesUrl = ''
     }
     if (Test-Path -LiteralPath $path -PathType Leaf) {
         $saved = Read-Utf8 $path | ConvertFrom-Json
@@ -112,13 +113,103 @@ function Get-WebUrl {
     return ''
 }
 
+function Get-OnlineText {
+    param($State, $Labels)
+    if ($State.pages -eq 'verified' -and $State.pagesUrl) { return "[$($Labels.onlinePlay)]($($State.pagesUrl))" }
+    if ($State.pages -eq 'published') { return $Labels.onlineUnverified }
+    return $Labels.onlinePending
+}
+
+function Write-Readme-Online {
+    $labels = Read-Utf8 (Join-Path $repo 'scripts\progress-labels.json') | ConvertFrom-Json
+    $path = Join-Path $repo 'README.md'
+    $text = Read-Utf8 $path
+    $a = $text.IndexOf('<!-- online-play:start -->')
+    $b = $text.IndexOf('<!-- online-play:end -->')
+    if ($a -lt 0 -or $b -lt $a) { return }
+    $lines = @()
+    foreach ($job in $queue) {
+        $s = Get-State $job.id
+        $lines += "- **$($job.title) ($($job.titleEn))**: $(Get-OnlineText $s $labels)"
+    }
+    $block = "<!-- online-play:start -->`n" + ($lines -join "`n") + "`n"
+    $new = $text.Substring(0, $a) + $block + $text.Substring($b)
+    if ($new -ne $text) { [System.IO.File]::WriteAllText($path, $new, $utf8) }
+}
+
+function Get-PagesUrl {
+    param($Job)
+    $web = Get-WebUrl
+    if ($web -match '^https://github\.com/([^/]+)/([^/]+)$') {
+        return "https://$($Matches[1].ToLower()).github.io/$($Matches[2])/play/$($Job.delivery)"
+    }
+    return ''
+}
+
+# Publish the delivered HTML to docs/play on main, wait for GitHub Pages,
+# then verify the live URL in a fresh browser session.
+function Invoke-Pages {
+    param($Job)
+    $id = $Job.id
+    $s = Get-State $id
+    if ($s.pages -eq 'verified') { return 'verified' }
+    $url = Get-PagesUrl $Job
+    if ($NoPush -or -not $url) { Write-Log "[PAGES] $id skipped (no GitHub origin or -NoPush)"; return 'none' }
+    $src = Join-Path $deliveries $Job.delivery
+    $rel = "docs/play/$($Job.delivery)"
+    $dst = Join-Path $repo ($rel -replace '/', '\')
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dst) | Out-Null
+    Copy-Item -LiteralPath $src -Destination $dst -Force
+    Invoke-Git $repo @('add', '--', $rel) | Out-Null
+    if ((Invoke-Git $repo @('diff', '--cached', '--quiet', '--', $rel)).Code -ne 0) {
+        $r = Invoke-Git $repo @('commit', '-q', '-m', "Publish $($Job.titleEn) to GitHub Pages", '--', $rel)
+        if ($r.Code -ne 0) { Write-Log "[PAGES] commit failed: $($r.Out -join ' ')"; return 'none' }
+    }
+    $r = Invoke-Git $repo @('push', 'origin', 'main')
+    if ($r.Code -ne 0) { Write-Log "[PAGES] push of main failed: $($r.Out -join ' ')"; return 'none' }
+    $s.pagesUrl = $url
+    $s.pages = 'published'
+    Save-State $id $s
+
+    $size = (Get-Item -LiteralPath $src).Length
+    $live = $false
+    $deadline = (Get-Date).AddMinutes($PagesWaitMinutes)
+    while ((Get-Date) -lt $deadline) {
+        try {
+            $resp = Invoke-WebRequest -Uri ($url + '?v=' + [DateTime]::UtcNow.Ticks) -UseBasicParsing -TimeoutSec 60
+            if ($resp.StatusCode -eq 200 -and $resp.RawContentLength -eq $size) { $live = $true; break }
+        } catch { }
+        Start-Sleep -Seconds 20
+    }
+    if (-not $live) {
+        Write-Log "[PAGES] $url did not serve the delivered file within $PagesWaitMinutes minutes. If GitHub Pages is not enabled: repository Settings > Pages > Source 'Deploy from a branch' > Branch main, folder /docs > Save. Then rerun the launcher."
+        return 'published'
+    }
+    $log = Join-Path $runLogs "$id.online.log"
+    [System.IO.File]::WriteAllText($log, '', $utf8)
+    $verifier = Join-Path $repo 'scripts\verify-online.cjs'
+    $code = Invoke-Step (Join-Path (Join-Path $trees $id) "games\$id") "node $verifier $id $url" $log
+    if ($code -ne 0) { Write-Log "[PAGES] Live verification failed for $url (exit $code). See $log"; return 'published' }
+    $s.pages = 'verified'
+    Save-State $id $s
+    Write-Log "[PAGES] Verified live: $url"
+    Write-Progress-File
+    Write-Readme-Online
+    Invoke-Git $repo @('add', '--', 'README.md', 'PROGRESS.md') | Out-Null
+    Invoke-Git $repo @('commit', '-q', '-m', "Add online play link for $($Job.titleEn)", '--', 'README.md', 'PROGRESS.md') | Out-Null
+    $r = Invoke-Git $repo @('push', 'origin', 'main')
+    if ($r.Code -ne 0) { Write-Log "[PAGES] push of README failed: $($r.Out -join ' ')" }
+    return 'verified'
+}
+
 function Write-Progress-File {
     $labels = Read-Utf8 (Join-Path $repo 'scripts\progress-labels.json') | ConvertFrom-Json
     $web = Get-WebUrl
     $sb = New-Object System.Text.StringBuilder
     [void]$sb.Append($labels.header)
-    [void]$sb.Append("`n| " + ($labels.columns -join ' | ') + " |`n")
-    [void]$sb.Append('|' + (' --- |' * $labels.columns.Count) + "`n")
+    $cols = @($labels.columns) + @($labels.onlineColumn)
+    [void]$sb.Append("`n| " + ($cols -join ' | ') + " |`n")
+    [void]$sb.Append('|' + (' --- |' * $cols.Count) + "`n")
     foreach ($job in $queue) {
         $s = Get-State $job.id
         $key = $s.status
@@ -137,7 +228,8 @@ function Write-Progress-File {
         $html = $labels.none
         if ($s.status -eq 'delivered') { $html = "``$($job.delivery)``" }
         $name = "$($job.title) ($($job.titleEn))"
-        [void]$sb.Append("| $name | $status | $offline | $mile | $html | $($labels.acceptance) |`n")
+        $online = Get-OnlineText $s $labels
+        [void]$sb.Append("| $name | $status | $offline | $mile | $html | $($labels.acceptance) | $online |`n")
     }
     [void]$sb.Append($labels.footer)
     [System.IO.File]::WriteAllText((Join-Path $repo 'PROGRESS.md'), $sb.ToString(), $utf8)
@@ -474,6 +566,12 @@ foreach ($job in $queue) {
                 $push = Invoke-Milestone $job
                 Write-Log "[MILESTONE] $id push state: $push"
             }
+            if ($s.pages -ne 'verified') {
+                $pg = Invoke-Pages $job
+                if ($pg -eq 'verified') {
+                    Send-Notice "$($job.title) ($($job.titleEn)) online" "$((Get-State $id).pagesUrl) | local: $target"
+                }
+            }
             continue
         }
         if ($batchBlocked) {
@@ -568,7 +666,9 @@ foreach ($job in $queue) {
             Write-Log "[DELIVERED] $id -> $target"
             $push = Invoke-Milestone $job
             $pushText = if ($push -eq 'pushed') { "GitHub: pushed $($job.branch)" } else { 'GitHub: push pending (local delivery kept)' }
-            Send-Notice "$($job.title) ($($job.titleEn)) delivered" "$target | $pushText"
+            $pg = Invoke-Pages $job
+            $pgText = if ($pg -eq 'verified') { "Online: $((Get-State $id).pagesUrl)" } else { 'Online: pending' }
+            Send-Notice "$($job.title) ($($job.titleEn)) delivered" "$target | $pushText | $pgText"
         } else {
             $s.status = if ($s.reason -match 'limit|budget') { 'blocked' } else { 'failed' }
             Save-State $id $s
