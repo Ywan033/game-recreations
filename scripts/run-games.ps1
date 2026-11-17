@@ -349,7 +349,8 @@ function Invoke-Session {
     $resultLine = $null
     if (Test-Path -LiteralPath $OutFile) {
         foreach ($line in [System.IO.File]::ReadLines($OutFile, $utf8)) {
-            if ($line.StartsWith('{"type":"result"')) { $resultLine = $line }
+            # Key order in the result object is not fixed; match on content.
+            if ($line.StartsWith('{') -and $line.Contains('"type":"result"') -and $line.Contains('"total_cost_usd"')) { $resultLine = $line }
         }
     }
     if ($resultLine) {
