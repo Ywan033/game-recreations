@@ -37,6 +37,7 @@ export class Trail {
       if (!this.wasActive) this.seg++;
       blade.base.getWorldPosition(_v1);
       blade.tip.getWorldPosition(_v2);
+      _v1.lerp(_v2, 0.4); // only the outer part of the blade leaves a streak
       this.pts.unshift({ b: _v1.toArray(), t: _v2.toArray(), l: 1, s: this.seg });
       if (this.pts.length > this.n) this.pts.pop();
     }
@@ -51,46 +52,89 @@ export class Trail {
       const nxt = this.pts[i + 1];
       const prev = this.pts[i - 1];
       const edge = (nxt && nxt.s !== p.s) || (prev && prev.s !== p.s && i > 0 && false);
-      let a = i < this.pts.length ? p.l * p.l : 0;
+      // a thin arc of light: brightest at the edge and when fresh, gone toward the hilt
+      let a = i < this.pts.length ? p.l * p.l * p.l : 0;
       if (edge) a = 0;
-      col[o] = color.r * a * 0.08; col[o + 1] = color.g * a * 0.08; col[o + 2] = color.b * a * 0.08;
-      col[o + 3] = color.r * a * 0.8 + a * 0.2; col[o + 4] = color.g * a * 0.8 + a * 0.2; col[o + 5] = color.b * a * 0.8 + a * 0.2;
+      col[o] = 0; col[o + 1] = 0; col[o + 2] = 0;
+      // (vertex colours are linear light: 0.08 already reads as a clear pale streak at night)
+      col[o + 3] = color.r * a * 0.08 + a * 0.012; col[o + 4] = color.g * a * 0.08 + a * 0.012; col[o + 5] = color.b * a * 0.08 + a * 0.012;
     }
     this.geo.attributes.position.needsUpdate = true;
     this.geo.attributes.color.needsUpdate = true;
   }
 }
 
-export function buildFx(scene, quality, emitters) {
+export function buildFx(scene, quality, world) {
   const low = quality === 'low';
   const fx = {};
   const glowT = glowTexture();
   const puffT = puffTexture();
+  const emitters = world.emitters;
 
-  // ---- rain streaks around the camera
-  const N = low ? 500 : 1500;
-  const BOX = { x: 30, y: 13, z: 30 };
-  const drops = new Float32Array(N * 4);
-  for (let i = 0; i < N; i++) {
-    drops[i * 4] = R(BOX.x) - BOX.x / 2; drops[i * 4 + 1] = R(BOX.y); drops[i * 4 + 2] = R(BOX.z) - BOX.z / 2; drops[i * 4 + 3] = R(26, 17);
+  // ---- rain: camera-facing streak quads in three depth layers.
+  // Near streaks are long, thin and faint (motion blur); the far layer is so fine it reads as haze.
+  // Each streak picks up warm light when it falls past a lantern.
+  const LAYERS = low
+    ? [{ n: 100, r0: 1.6, r1: 8, len: 1.0, w: 0.012, a: 0.13 }, { n: 300, r0: 8, r1: 20, len: 0.6, w: 0.015, a: 0.17 }, { n: 220, r0: 20, r1: 42, len: 0.7, w: 0.04, a: 0.06 }]
+    : [{ n: 260, r0: 1.6, r1: 8, len: 1.0, w: 0.012, a: 0.13 }, { n: 900, r0: 8, r1: 20, len: 0.6, w: 0.015, a: 0.17 }, { n: 800, r0: 20, r1: 42, len: 0.7, w: 0.04, a: 0.06 }];
+  const N = LAYERS.reduce((s, l) => s + l.n, 0);
+  const TOP = 13;
+  const drops = new Float32Array(N * 6); // angle, radius, y, speed, length scale, layer
+  {
+    let i = 0;
+    LAYERS.forEach((L, li) => {
+      for (let k = 0; k < L.n; k++, i++) {
+        drops[i * 6] = R(Math.PI * 2); drops[i * 6 + 1] = Math.sqrt(R(L.r1 * L.r1, L.r0 * L.r0)); drops[i * 6 + 2] = R(TOP);
+        drops[i * 6 + 3] = R(24, 17); drops[i * 6 + 4] = R(1.3, 0.7); drops[i * 6 + 5] = li;
+      }
+    });
   }
-  const rpos = new Float32Array(N * 6);
+  const rpos = new Float32Array(N * 12);
+  const rcol = new Float32Array(N * 12);
+  const ruv = new Float32Array(N * 8);
+  const ridx = [];
+  for (let i = 0; i < N; i++) {
+    ruv.set([0, 0, 1, 0, 0, 1, 1, 1], i * 8);
+    const a = i * 4;
+    ridx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+  }
   const rgeo = new THREE.BufferGeometry();
   rgeo.setAttribute('position', new THREE.BufferAttribute(rpos, 3));
-  const rain = new THREE.LineSegments(rgeo, new THREE.LineBasicMaterial({ color: 0xa8c0e0, transparent: true, opacity: 0.3, depthWrite: false }));
+  rgeo.setAttribute('color', new THREE.BufferAttribute(rcol, 3));
+  rgeo.setAttribute('uv', new THREE.BufferAttribute(ruv, 2));
+  rgeo.setIndex(ridx);
+  const streakT = (() => {
+    const c = document.createElement('canvas');
+    c.width = 16; c.height = 64;
+    const ctx = c.getContext('2d');
+    const img = ctx.createImageData(16, 64);
+    for (let y = 0; y < 64; y++) for (let x = 0; x < 16; x++) {
+      const u = 1 - Math.abs((x + 0.5) / 8 - 1), v = (y + 0.5) / 64;
+      const a = Math.min(1, u * 1.6) ** 1.5 * Math.sin(Math.PI * v) ** 0.8 * (0.35 + 0.65 * v); // soft edges, brighter leading end
+      const o = (y * 16 + x) * 4;
+      img.data[o] = img.data[o + 1] = img.data[o + 2] = 255 * a; img.data[o + 3] = 255;
+    }
+    ctx.putImageData(img, 0, 0);
+    const t = new THREE.CanvasTexture(c);
+    t.colorSpace = THREE.SRGBColorSpace;
+    return t;
+  })();
+  const rain = new THREE.Mesh(rgeo, new THREE.MeshBasicMaterial({ map: streakT, vertexColors: true, blending: THREE.AdditiveBlending, transparent: true, depthWrite: false, fog: false, side: THREE.DoubleSide }));
   rain.frustumCulled = false;
+  rain.renderOrder = 4;
   scene.add(rain);
   const wind = { x: 1.6, z: 0.7 };
+  const lamps = world.lanterns.map((l) => ({ x: l.g.position.x, y: l.g.position.y - 0.45, z: l.g.position.z, k: l.light ? 1 : 0.55 }));
 
-  // ---- splash rings on the flagstones
+  // ---- splashes on the flagstones: small, dim rings of varied size, densest near the camera
   const splashes = [];
-  const ringG = new THREE.RingGeometry(0.75, 1, 14);
-  for (let i = 0; i < (low ? 14 : 40); i++) {
-    const m = new THREE.Mesh(ringG, new THREE.MeshBasicMaterial({ color: 0x9fc0e8, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false }));
+  const ringG = new THREE.RingGeometry(0.72, 1, 12);
+  for (let i = 0; i < (low ? 20 : 70); i++) {
+    const m = new THREE.Mesh(ringG, new THREE.MeshBasicMaterial({ color: 0x8fa6c4, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false }));
     m.rotation.x = -Math.PI / 2;
     m.renderOrder = 1;
     scene.add(m);
-    splashes.push({ m, t: R(), d: R(0.5, 0.3), s: 0.2 });
+    splashes.push({ m, t: R(), d: R(0.5, 0.3), s: 0.1, a: 0.1 });
   }
 
   // ---- steam puffs
@@ -126,7 +170,7 @@ export function buildFx(scene, quality, emitters) {
       const s = sparks[sparkI++ % sparks.length];
       s.sp.position.copy(pos);
       s.v.set(R(2, -1), R(1.6, -0.3), R(2, -1)).normalize().multiplyScalar(speed * R(1, 0.4));
-      s.t = 0; s.d = R(0.45, 0.2); s.s = size * R(1.3, 0.6);
+      s.t = 0; s.d = R(0.4, 0.16); s.s = size * R(0.55, 0.22); // small hot flecks, not glowing balls
       s.sp.material.color.set(color);
       s.sp.visible = true;
     }
@@ -142,11 +186,11 @@ export function buildFx(scene, quality, emitters) {
   fx.flash = (pos, color, intensity = 40, size = 2.2, dur = 0.2) => {
     flash.position.copy(pos); flash.color.set(color);
     burst.position.copy(pos); burst.material.color.set(color);
-    flashT = dur; flashD = dur; flashI = intensity; burstS = size;
+    flashT = dur; flashD = dur; flashI = intensity * 0.35; burstS = size; // a glint of struck steel, not a floodlight
   };
 
   // ---- shockwave ring (phase change)
-  const shock = new THREE.Mesh(new THREE.RingGeometry(0.93, 1, 64), new THREE.MeshBasicMaterial({ color: 0xff7a2a, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, fog: false, side: THREE.DoubleSide }));
+  const shock = new THREE.Mesh(new THREE.RingGeometry(0.965, 1, 64), new THREE.MeshBasicMaterial({ color: 0xff7a2a, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, fog: false, side: THREE.DoubleSide }));
   shock.rotation.x = -Math.PI / 2;
   shock.position.y = 0.08;
   shock.renderOrder = 3;
@@ -192,30 +236,59 @@ export function buildFx(scene, quality, emitters) {
 
   fx.update = (dt, time, cam) => {
     // rain
-    const cx = cam.position.x, cz = cam.position.z;
+    const cx = cam.position.x, cy = cam.position.y, cz = cam.position.z;
     for (let i = 0; i < N; i++) {
-      const o = i * 4;
+      const o = i * 6;
+      const L = LAYERS[drops[o + 5]];
       const sp = drops[o + 3];
-      drops[o + 1] -= sp * dt;
-      drops[o] += wind.x * dt; drops[o + 2] += wind.z * dt;
-      if (drops[o + 1] < 0) { drops[o + 1] += BOX.y; drops[o] = R(BOX.x) - BOX.x / 2; drops[o + 2] = R(BOX.z) - BOX.z / 2; }
-      const x = cx + drops[o], y = drops[o + 1], z = cz + drops[o + 2];
-      const q = i * 6;
-      const len = sp * 0.026;
-      rpos[q] = x; rpos[q + 1] = y; rpos[q + 2] = z;
-      rpos[q + 3] = x - wind.x * len * 0.06; rpos[q + 4] = y + len; rpos[q + 5] = z - wind.z * len * 0.06;
+      drops[o + 2] -= sp * dt;
+      if (drops[o + 2] < 0) { drops[o + 2] += TOP; drops[o] = R(Math.PI * 2); drops[o + 1] = Math.sqrt(R(L.r1 * L.r1, L.r0 * L.r0)); }
+      const rx = Math.cos(drops[o]) * drops[o + 1], rz = Math.sin(drops[o]) * drops[o + 1];
+      const x = cx + rx, y = drops[o + 2], z = cz + rz;
+      const len = L.len * drops[o + 4];
+      // billboard across the view direction
+      const inv = (L.w * 0.5) / (Math.hypot(rx, rz) || 1);
+      const px = -rz * inv, pz = rx * inv;
+      const tx = x - wind.x * len * 0.06, tz = z - wind.z * len * 0.06;
+      const q = i * 12;
+      rpos[q] = x - px; rpos[q + 1] = y; rpos[q + 2] = z - pz;
+      rpos[q + 3] = x + px; rpos[q + 4] = y; rpos[q + 5] = z + pz;
+      rpos[q + 6] = tx - px; rpos[q + 7] = y + len; rpos[q + 8] = tz - pz;
+      rpos[q + 9] = tx + px; rpos[q + 10] = y + len; rpos[q + 11] = tz + pz;
+      // cool sky light, plus warm light from any lantern the streak is passing
+      let warm = 0;
+      if (drops[o + 5] < 2) {
+        for (let k = 0; k < lamps.length; k++) {
+          const l = lamps[k];
+          const d2 = (x - l.x) * (x - l.x) + (y + len * 0.5 - l.y) * (y + len * 0.5 - l.y) + (z - l.z) * (z - l.z);
+          if (d2 < 30) warm += l.k / (1 + d2 * 0.9);
+        }
+      }
+      // streaks right at the lens fade out so they never mask the fight
+      const nearFade = Math.min(1, Math.max(0, (Math.hypot(rx, y - cy, rz) - 1.2) / 2.5));
+      const a = L.a * nearFade;
+      const r = a * (0.5 + warm * 2.6), g = a * (0.6 + warm * 1.5), b = a * (0.78 + warm * 0.55);
+      for (let v = 0; v < 4; v++) { rcol[q + v * 3] = r; rcol[q + v * 3 + 1] = g; rcol[q + v * 3 + 2] = b; }
     }
     rgeo.attributes.position.needsUpdate = true;
+    rgeo.attributes.color.needsUpdate = true;
     // splashes
     for (const s of splashes) {
       s.t += dt / s.d;
       if (s.t >= 1) {
-        s.t = 0; s.d = R(0.5, 0.25); s.s = R(0.34, 0.14);
-        s.m.position.set(R(ARENA.yard.maxX * 2) - ARENA.yard.maxX, 0.035, R(27) - 9);
-        if (s.m.position.z > 9 && Math.abs(s.m.position.x) > 1.5) s.m.position.x *= 0.12;
+        const near = R() < 0.6;
+        const a = R(Math.PI * 2), rr = near ? R(7, 1) : R(18, 6);
+        let x = cx + Math.cos(a) * rr, z = cz + Math.sin(a) * rr;
+        x = Math.max(ARENA.yard.minX, Math.min(ARENA.yard.maxX, x));
+        z = Math.max(ARENA.yard.minZ, Math.min(ARENA.lane.maxZ, z));
+        if (z > ARENA.yard.maxZ) x = Math.max(ARENA.lane.minX, Math.min(ARENA.lane.maxX, x));
+        s.t = 0; s.d = R(0.42, 0.2);
+        s.s = near ? R(0.09, 0.035) : R(0.16, 0.07);
+        s.a = near ? R(0.16, 0.07) : R(0.11, 0.05);
+        s.m.position.set(x, 0.03, z);
       }
-      s.m.scale.setScalar(s.s * (0.25 + s.t));
-      s.m.material.opacity = 0.34 * (1 - s.t);
+      s.m.scale.setScalar(s.s * (0.3 + s.t * 1.4));
+      s.m.material.opacity = s.a * (1 - s.t) * (1 - s.t);
     }
     // steam emitters
     emitters.forEach((e, i) => {
@@ -251,13 +324,13 @@ export function buildFx(scene, quality, emitters) {
       const k = Math.max(0, flashT / flashD);
       flash.intensity = flashI * k;
       burst.visible = k > 0.01;
-      burst.material.opacity = k * 0.8;
-      burst.scale.setScalar(burstS * (1.4 - k * 0.6));
+      burst.material.opacity = k * 0.5;
+      burst.scale.setScalar(burstS * 0.55 * (1.4 - k * 0.6));
     } else { flash.intensity = 0; burst.material.opacity = 0; burst.visible = false; }
     if (shockT >= 0) {
       shockT += dt / 0.7;
       if (shockT >= 1) { shockT = -1; shock.material.opacity = 0; shock.visible = false; }
-      else { shock.visible = true; shock.scale.setScalar(0.5 + shockT * 9); shock.material.opacity = (1 - shockT) * 0.9; }
+      else { shock.visible = true; shock.scale.setScalar(0.5 + shockT * 9); shock.material.opacity = (1 - shockT) * (1 - shockT) * 0.3; }
     }
   };
   return fx;

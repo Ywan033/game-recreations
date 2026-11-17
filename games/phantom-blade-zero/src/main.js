@@ -85,7 +85,26 @@ async function boot() {
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(52, window.innerWidth / window.innerHeight, 0.12, 160);
   const world = buildWorld(scene, opts.quality);
-  const fx = buildFx(scene, opts.quality, world.emitters);
+  // Capture the empty yard once into a small cube map: wet stone and metal reflect the real
+  // lanterns and windows, and the dim result doubles as the ambient light.
+  try {
+    const envRT = new THREE.CubeRenderTarget(low ? 64 : 128, { type: THREE.HalfFloatType });
+    const envCam = new THREE.CubeCamera(0.2, 90, envRT);
+    envCam.position.set(0, 1.1, 0.5);
+    scene.add(envCam);
+    // the capture sees a faintly moonlit overcast instead of the black backdrop, so puddles
+    // mirror a dim sky rather than turning into black holes
+    const sky = scene.background.clone();
+    scene.background.set(0x1b2636);
+    envCam.update(renderer, scene);
+    scene.background.copy(sky);
+    scene.remove(envCam);
+    scene.environment = envRT.texture;
+    scene.environmentIntensity = 0.85;
+  } catch (e) {
+    console.warn('environment capture skipped: ' + (e && e.message ? e.message : e));
+  }
+  const fx = buildFx(scene, opts.quality, world);
   const audio = createAudio();
   if (opts.mute) audio.toggleMute();
 
@@ -93,12 +112,12 @@ async function boot() {
   const pr = makePlayer();
   const br = makeBoss();
   scene.add(pr.root, br.root);
-  const pTrail = new Trail(scene, 0x7fe8ff, 20, 0.2);
+  const pTrail = new Trail(scene, 0xa8dfee, 20, 0.2);
   const bTrails = [new Trail(scene, 0x66b8ff, 24, 0.26), new Trail(scene, 0x66b8ff, 24, 0.26)];
-  const bossLight = new THREE.PointLight(0x66b8ff, 0, 7, 1.8);
+  const bossLight = new THREE.PointLight(0x66b8ff, 0, 6, 1.8);
   scene.add(bossLight);
-  // a faint cold rim light that follows the duel so silhouettes stay readable in the rain
-  const rim = new THREE.PointLight(0x9fc4ff, 9, 12, 1.6);
+  // a dim, cold moonlit kicker from behind the duel so silhouettes separate from the dark walls
+  const rim = new THREE.PointLight(0x8fb0e8, 14, 16, 1.5);
   scene.add(rim);
 
   // ------------------------------------------------------------ input
@@ -106,8 +125,7 @@ async function boot() {
   const edge = { attack: false, dodge: false };
   const mouse = { guard: false, lastX: null, lastY: null };
   const LOCK_REST = 0.3; // resting lock-on view sits slightly off the shoulder so the foe is never hidden behind the player
-  const AVOID = [0, 0.4, -0.4, 0.8, -0.8, 1.2, -1.2, 1.6, -1.6, 2.1, -2.1, 2.6, -2.6, Math.PI];
-  const cam = { yaw: 0, pitch: 0.3, off: LOCK_REST, lock: true, base: 0, t: 1, lastMouse: -10, shake: 0, inBounds: true, dist: 5.8, avoid: 0, avoidTarget: 0 };
+  const cam = { yaw: 0, pitch: 0.3, off: LOCK_REST, lock: true, base: 0, t: 1, lastMouse: -10, shake: 0, inBounds: true, dist: 5.8, avoid: 0, avoidS: 0, avoidTarget: 0, te: 1 };
   let paused = false;
   let wall = 0;
 
@@ -187,7 +205,7 @@ async function boot() {
     cam.lastMouse = wall;
   }
   function resetView() {
-    cam.yaw = 0; cam.off = LOCK_REST; cam.pitch = 0.3; cam.t = 1; cam.lock = true; cam.avoid = 0; cam.avoidTarget = 0;
+    cam.yaw = 0; cam.off = LOCK_REST; cam.pitch = 0.3; cam.t = 1; cam.te = 1; cam.lock = true; cam.avoid = 0; cam.avoidS = 0; cam.avoidTarget = 0;
     lastHp = { p: -1, b: -1 };
   }
 
@@ -207,6 +225,59 @@ async function boot() {
     if (ok) for (const o of OBSTACLES) if ((x - o.x) ** 2 + (z - o.z) ** 2 < (o.r + 0.15) ** 2) return false;
     return ok;
   }
+  // Free distance from (px, pz) along the unit heading (dx, dz) before the camera would leave the
+  // walkable space (yard, plus the lane while it is open) or touch a prop. Exact, so it varies
+  // continuously as the player or the view moves.
+  const CM = 0.47; // camera margin from the walls
+  function rectExit(px, pz, dx, dz, x0, x1, z0, z1) {
+    if (px < x0 - 1e-6 || px > x1 + 1e-6 || pz < z0 - 1e-6 || pz > z1 + 1e-6) return -1;
+    let t = 1e9;
+    if (dx > 1e-6) t = Math.min(t, (x1 - px) / dx); else if (dx < -1e-6) t = Math.min(t, (x0 - px) / dx);
+    if (dz > 1e-6) t = Math.min(t, (z1 - pz) / dz); else if (dz < -1e-6) t = Math.min(t, (z0 - pz) / dz);
+    return Math.max(0, t);
+  }
+  // Wider margins where things hang off the walls, so the camera stays clear of them:
+  // west chains, east pipework and gantry chains, north eave lanterns.
+  const yardRect = () => [ARENA.yard.minX + 1.1, ARENA.yard.maxX - 1.9, ARENA.yard.minZ + 1.25, ARENA.yard.maxZ - CM];
+  // distance to the yard's camera bounds along a heading (used while the camera glides in after the gate drops)
+  function yardRoom(px, pz, dx, dz) {
+    const yr = yardRect();
+    px = Math.max(yr[0], Math.min(yr[1], px)); pz = Math.max(yr[2], Math.min(yr[3], pz));
+    return rectExit(px, pz, dx, dz, yr[0], yr[1], yr[2], yr[3]);
+  }
+  // free distance along a heading before a prop is in the way
+  function propRoom(px, pz, dx, dz, maxD) {
+    let d = maxD;
+    for (const o of OBSTACLES) {
+      const r = o.r + 0.5;
+      const ox = px - o.x, oz = pz - o.z;
+      const b = ox * dx + oz * dz;
+      const c = ox * ox + oz * oz - r * r;
+      if (c <= 0) continue; // (the player never stands inside a prop's margin for long)
+      const disc = b * b - c;
+      if (disc > 0 && b < 0) d = Math.min(d, -b - Math.sqrt(disc));
+    }
+    return Math.max(0, Math.min(maxD, d));
+  }
+  // Slide a camera position back inside along the walls. Projection is continuous, so the camera
+  // glides along a wall instead of jumping; out receives the result.
+  function confineCamera(vx, vz, piv, laneOk, out) {
+    const L = ARENA.lane;
+    const yr = yardRect();
+    const ax = Math.max(yr[0], Math.min(yr[1], vx)), az = Math.max(yr[2], Math.min(yr[3], vz));
+    let x = ax, z = az;
+    if (laneOk) {
+      const bx = Math.max(L.minX + 0.36, Math.min(L.maxX - 0.36, vx)), bz = Math.max(L.minZ, Math.min(L.maxZ - 0.42, vz));
+      if ((bx - vx) ** 2 + (bz - vz) ** 2 < (ax - vx) ** 2 + (az - vz) ** 2) { x = bx; z = bz; }
+    }
+    for (const o of OBSTACLES) {
+      const dx = x - o.x, dz = z - o.z, d = Math.hypot(dx, dz), r = o.r + 0.44;
+      if (d < r && d > 1e-4) { x = o.x + (dx / d) * r; z = o.z + (dz / d) * r; }
+    }
+    for (let i = 0; i < 24 && !camInside(x, z, laneOk); i++) { x += (piv.x - x) * 0.15; z += (piv.z - z) * 0.15; }
+    out.x = x; out.z = z;
+  }
+  const slide = { x: 0, z: 0 };
   function updateCamera(dt) {
     const p = g.player;
     const b = g.boss;
@@ -243,41 +314,63 @@ async function boot() {
     // Keep the camera inside the walls. March from the player toward the wanted spot, but first swing
     // the camera sideways around the player to find room, so the duel stays framed near walls and corners.
     // (Movement keys keep their heading; only the viewpoint swings.)
-    const laneOk = !g.gateClosed || p.z > ARENA.yard.maxZ - 0.5;
-    const march = (yaw) => {
-      const hx = Math.sin(yaw) * dist * cp, hz = Math.cos(yaw) * dist * cp;
-      let tm = 0;
-      const STEPS = 28;
-      for (let i = 1; i <= STEPS; i++) {
-        const t = i / STEPS;
-        if (!camInside(pivot.x + hx * t, pivot.z + hz * t, laneOk)) break;
-        tm = t;
-      }
-      return tm;
+    // Once the gate has dropped the camera belongs in the yard; if it is still out in the lane it
+    // glides in rather than snapping (laneOk only keeps it legal while it is on its way).
+    const laneRoom = !g.gateClosed;
+    const laneOk = laneRoom || camera.position.z > ARENA.yard.maxZ - CM + 0.01;
+    const hd = dist * cp; // wanted horizontal distance
+    // How far from the player the camera ends up on a heading: props stop it, walls make it slide.
+    const room = (yaw) => {
+      const dx = Math.sin(yaw), dz = Math.cos(yaw);
+      const d = propRoom(pivot.x, pivot.z, dx, dz, hd);
+      confineCamera(pivot.x + dx * d, pivot.z + dz * d, pivot, laneRoom, slide);
+      return Math.min(1, Math.hypot(slide.x - pivot.x, slide.z - pivot.z) / hd);
     };
-    let bestO = 0;
+    let bestO = cam.avoidTarget;
     if (!ending) {
-      let bestScore = -1e9;
-      for (const o of AVOID) {
-        if (!locked && Math.abs(o) > 1.7) continue; // a free camera never flips to face the player
-        const score = march(cam.yaw + o) - Math.abs(o) * 0.15 - Math.abs(o - cam.avoidTarget) * 0.06;
-        if (score > bestScore) { bestScore = score; bestO = o; }
-      }
-    }
+      // Look for the heading with the most room. The score is continuous, and the current choice
+      // is only dropped for a clearly better one, so the view does not hunt between headings.
+      const score = (o) => room(cam.yaw + o) - Math.abs(o) * 0.15;
+      // a free camera normally never flips to face the player; only a dead-end corner lets it
+      let lim = locked ? Math.PI : 1.7;
+      if (!locked && Math.abs(bestO) > lim && room(cam.yaw + bestO) > 0.3) lim = Math.PI;
+      if (Math.abs(bestO) > lim) bestO = 0;
+      let bestScore = score(bestO) + 0.07;
+      const scan = () => {
+        for (let o = -lim; o <= lim + 1e-6; o += lim / 16) {
+          const sc = score(o);
+          if (sc > bestScore) { bestScore = sc; bestO = o; }
+        }
+      };
+      scan();
+      if (!locked && lim < 3 && room(cam.yaw + bestO) < 0.28) { lim = Math.PI; scan(); }
+    } else bestO = 0;
     cam.avoidTarget = bestO;
-    cam.avoid += (bestO - cam.avoid) * (1 - Math.exp(-dt * 5));
+    // two-stage smoothing: the swing eases in and out instead of starting with a jerk
+    cam.avoidS += (bestO - cam.avoidS) * (1 - Math.exp(-dt * 4.5));
+    cam.avoid += (cam.avoidS - cam.avoid) * (1 - Math.exp(-dt * 6));
     const yawEff = cam.yaw + cam.avoid;
-    want.set(pivot.x + Math.sin(yawEff) * dist * cp, want.y, pivot.z + Math.cos(yawEff) * dist * cp);
-    const tMax = march(yawEff);
-    if (tMax < cam.t) cam.t = tMax; else cam.t += (tMax - cam.t) * (1 - Math.exp(-dt * 3.5));
-    const t = cam.t;
-    camera.position.set(pivot.x + (want.x - pivot.x) * t, pivot.y + (want.y - pivot.y) * t + (1 - t) * 1.3, pivot.z + (want.z - pivot.z) * t);
+    want.set(pivot.x + Math.sin(yawEff) * hd, want.y, pivot.z + Math.cos(yawEff) * hd);
+    // pull in quickly but smoothly when a prop (or the dropped gate) is in the way, ease back out slowly
+    const hx = Math.sin(yawEff), hz = Math.cos(yawEff);
+    let tMax = propRoom(pivot.x, pivot.z, hx, hz, hd) / hd;
+    const gliding = laneOk && !laneRoom;
+    if (gliding) tMax = Math.min(tMax, yardRoom(pivot.x, pivot.z, hx, hz) / hd);
+    cam.t += (tMax - cam.t) * (1 - Math.exp(-dt * (tMax < cam.t ? (gliding ? 4 : 16) : 3)));
+    // walls: slide along them
+    confineCamera(pivot.x + hx * hd * cam.t, pivot.z + hz * hd * cam.t, pivot, laneOk, slide);
+    // te is how much of the wanted distance the camera really has; as it closes in, the camera
+    // rises a little, eased with the same smoothed value so there is no jump
+    const teNow = Math.min(1, Math.hypot(slide.x - pivot.x, slide.z - pivot.z) / hd);
+    cam.te += (teNow - cam.te) * (1 - Math.exp(-dt * 9));
+    const t = cam.te;
+    camera.position.set(slide.x, pivot.y + (want.y - pivot.y) * t + (1 - t) * (1 - t) * 0.85, slide.z);
     // stay below the wall tops, and under the eaves near the north and west buildings
     const Y = ARENA.yard;
     const nearRoof = Math.min(camera.position.z - Y.minZ, camera.position.x - Y.minX);
     const cap = 3.15 + Math.max(0, Math.min(1, (nearRoof - 2.2) / 1.5)) * 0.3;
     if (camera.position.y > cap) camera.position.y = cap;
-    cam.inBounds = camInside(camera.position.x, camera.position.z, laneOk) || t === 0;
+    cam.inBounds = camInside(camera.position.x, camera.position.z, laneOk);
 
     if (ending) {
       focus.set(pivot.x, 0.8, pivot.z);
@@ -461,7 +554,6 @@ async function boot() {
   const hot = new THREE.Color(0xff6a1c);
   const cTmp = new THREE.Color();
   const white = new THREE.Color(0xffffff);
-  const clothBase = new THREE.Color(0x1a0504);
   let heat = 0;
   let lastStep = 0;
   world.onBolt = () => audio.play('thunder');
@@ -470,21 +562,16 @@ async function boot() {
   function updateVisuals(dt, time) {
     const p = g.player;
     const b = g.boss;
-    pr.root.position.set(p.x, 0, p.z);
-    pr.root.rotation.y = p.yaw;
     animatePlayer(pr, p, dt, time);
-    br.root.position.set(b.x, 0, b.z);
     animateBoss(br, b, dt, time);
-    br.root.rotation.y = b.yaw + br.yawExtra;
     pr.root.updateMatrixWorld(true);
     br.root.updateMatrixWorld(true);
-    // footsteps on the wet stone
-    const stepN = Math.floor(pr.phase / Math.PI);
-    if (stepN !== lastStep) {
-      lastStep = stepN;
+    // footsteps on the wet stone: one sound and a small spray each time a foot lands
+    if (pr.steps !== lastStep) {
+      lastStep = pr.steps;
       if (p.moving && g.mode === 'fight') {
         audio.play('step');
-        fx.steam(p.x, 0.12, p.z, 0, 0.5, 0, 0.22, 0.32, 0.2, 0xb8d0e8);
+        fx.steam(p.x, 0.08, p.z, 0, 0.35, 0, 0.14, 0.28, 0.1, 0x9fb0c4);
       }
     }
 
@@ -497,14 +584,14 @@ async function boot() {
     heat += (wantHeat - heat) * Math.min(1, dt * 4);
     cTmp.copy(cold).lerp(hot, heat);
     bTrails[0].color.copy(cTmp); bTrails[1].color.copy(cTmp);
-    br.edgeMat.emissive.copy(cTmp).multiplyScalar(0.45 + heat * 1.3);
-    br.eyeMat.color.copy(cTmp).lerp(white, 0.3);
-    br.packGlow.color.copy(cTmp);
+    br.edgeMat.emissive.copy(cTmp).multiplyScalar(0.1 + heat * 1.1);
+    br.eyeMat.color.copy(cTmp).lerp(white, 0.25).multiplyScalar(1.6);
+    br.packGlow.color.copy(cTmp).multiplyScalar(1.2 + heat * 1.5);
     bossLight.color.copy(cTmp);
-    bossLight.position.set(b.x, 1.6, b.z);
-    bossLight.intensity = (g.engaged && b.st !== 'dead' ? 4 + heat * 12 : 0) * (0.9 + 0.1 * Math.sin(time * 17));
-    br.cloth.emissive.copy(clothBase).lerp(white, Math.min(1, b.flash * 5));
-    rim.position.set((p.x + b.x) / 2, 4.2, (p.z + b.z) / 2 + 1.5);
+    br.vent.getWorldPosition(bossLight.position);
+    bossLight.position.y -= 0.25;
+    bossLight.intensity = (g.engaged && b.st !== 'dead' ? 1.2 + heat * 9 : 0) * (0.9 + 0.1 * Math.sin(time * 17));
+    rim.position.set((p.x + b.x) / 2 - 2.5, 5.5, (p.z + b.z) / 2 + 2.5);
 
     // boss vents steam when hot, and hisses hard during the transition
     const ventRate = b.st === 'phase' ? 26 : b.st === 'dead' ? 6 : heat > 0.5 ? 7 : b.st === 'recover' ? 4 : 0;
@@ -548,7 +635,7 @@ async function boot() {
     fx.deco.position.set(b.x, 0, b.z);
     fx.deco.rotation.y = b.yaw;
     for (const k in want) {
-      const w = k === 'dPunish' ? want[k] : want[k] * 0.4; // keep floor telegraphs readable but not blinding
+      const w = k === 'dPunish' ? want[k] * 0.5 : want[k] * 0.15; // floor telegraphs stay readable but sit under the lighting
       deco[k] += (w - deco[k]) * Math.min(1, dt * 18);
       fx[k].material.opacity = deco[k];
       fx[k].visible = deco[k] > 0.01;
@@ -559,10 +646,10 @@ async function boot() {
     for (let i = 0; i < 2; i++) {
       const sp = fx.glints[i];
       br.blades[i].tip.getWorldPosition(sp.position);
-      const a = glint.a > 0 ? Math.min(0.7, glint.a * 0.7) : heat * 0.3;
+      const a = glint.a > 0 ? Math.min(0.55, glint.a * 0.55) : heat * 0.22;
       sp.material.opacity += (a - sp.material.opacity) * Math.min(1, dt * 25);
       sp.material.color.set(glint.a > 0 ? glint.c : 0xff7a2a);
-      sp.scale.setScalar((glint.a > 0 ? Math.min(1.7, glint.s * 0.7) : 0.45));
+      sp.scale.setScalar((glint.a > 0 ? Math.min(0.9, glint.s * 0.4) : 0.3));
       sp.visible = sp.material.opacity > 0.02;
     }
     // guard glow on the player's blade
@@ -570,9 +657,9 @@ async function boot() {
     pr.blades[0].tip.getWorldPosition(gg.position);
     pr.blades[0].base.getWorldPosition(tmp);
     gg.position.lerp(tmp, 0.5);
-    const ga = p.guard ? (p.guardT < 0.2 ? 0.9 : 0.35) : 0;
+    const ga = p.guard ? (p.guardT < 0.2 ? 0.22 : 0.03) : 0;
     gg.material.opacity += (ga - gg.material.opacity) * Math.min(1, dt * 20);
-    gg.scale.setScalar(p.guard && p.guardT < 0.2 ? 1.5 : 1.0);
+    gg.scale.setScalar(p.guard && p.guardT < 0.2 ? 0.55 : 0.4);
     gg.visible = gg.material.opacity > 0.02;
   }
 
@@ -624,7 +711,7 @@ async function boot() {
     visTime += vdt;
     updateVisuals(Math.max(vdt, g.mode === 'fight' ? 0 : real), visTime);
     updateCamera(real);
-    world.update(real, wall, g.gateClosed);
+    world.update(real, wall, g.gateClosed, camera.position);
     fx.update(real, wall, camera);
     updateHud();
     renderer.render(scene, camera);
@@ -648,7 +735,7 @@ async function boot() {
         stats: { ...g.stats },
         cam: {
           x: camera.position.x, y: camera.position.y, z: camera.position.z, yaw: cam.yaw, pitch: cam.pitch, lock: cam.lock,
-          inBounds: cam.inBounds, t: cam.t, avoid: cam.avoid, playerNdc: ndc(p.x, 1.1, p.z), bossNdc: ndc(b.x, 1.3, b.z),
+          inBounds: cam.inBounds, t: cam.te, avoid: cam.avoid, playerNdc: ndc(p.x, 1.1, p.z), bossNdc: ndc(b.x, 1.3, b.z),
         },
         arena: ARENA.yard,
       };

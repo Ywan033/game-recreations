@@ -9,6 +9,10 @@
     "dev": "vite",
     "build": "vite build",
     "install:browsers": "playwright install chromium",
+    "shots": "node tests/compare-shots.mjs",
+    "shots:before": "node tests/compare-shots.mjs before",
+    "shots:after": "node tests/compare-shots.mjs after",
+    "shots:review": "vite build && node tests/compare-shots.mjs after review seq",
     "test:sim": "node --test tests/sim.test.mjs",
     "test:offline": "playwright test"
   },

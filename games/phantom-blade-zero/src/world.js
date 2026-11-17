@@ -1,102 +1,130 @@
 // Procedural rainy-night tavern courtyard: every mesh and texture is generated here.
 import * as THREE from 'three/webgpu';
 import { ARENA, mulberry32 } from './sim.js';
+import { canvasTex, normalFromHeight, speckle, blotches, detailMaps } from './tex.js';
 
 const rnd = mulberry32(20240);
 const R = (a = 1, b = 0) => b + rnd() * (a - b);
 
-function canvasTex(w, h, draw, srgb = true) {
-  const c = document.createElement('canvas');
-  c.width = w; c.height = h;
-  const ctx = c.getContext('2d');
-  draw(ctx, w, h);
-  const t = new THREE.CanvasTexture(c);
-  if (srgb) t.colorSpace = THREE.SRGBColorSpace;
-  t.wrapS = t.wrapT = THREE.RepeatWrapping;
-  t.anisotropy = 4;
-  return t;
-}
-
-function speckle(ctx, w, h, n, alpha, light = true) {
-  for (let i = 0; i < n; i++) {
-    const v = light ? 255 : 0;
-    ctx.fillStyle = `rgba(${v},${v},${v},${R(alpha)})`;
-    ctx.fillRect(R(w), R(h), R(3, 1), R(3, 1));
-  }
-}
-
 // ------------------------------------------------------------------ textures
 
+// Wet flagstones: colour, roughness and a normal map drawn from the same stone layout, so the
+// joints are dark and recessed, each slab has its own tilt and wear, and puddles lie flat and glossy.
 function flagstoneTextures() {
   const S = 1024;
   const stones = [];
-  const rows = 8;
+  const rows = 10;
   const rh = S / rows;
   for (let r = 0; r < rows; r++) {
     let x = -R(120);
     while (x < S) {
-      const w = R(230, 110);
-      stones.push({ x, y: r * rh, w, h: rh, tone: R(), wet: R() });
+      const w = R(200, 96);
+      stones.push({ x, y: r * rh, w, h: rh, tone: R(), wet: R(), tilt: R(6.3), amt: R(26, 4) });
       x += w;
     }
   }
+  // stones that start left of the tile also appear at the right edge, so the texture tiles
+  for (const s of stones.slice()) if (s.x < 0) stones.push({ ...s, x: s.x + S });
   const puddles = [];
-  for (let i = 0; i < 9; i++) puddles.push({ x: R(S), y: R(S), rx: R(110, 40), ry: R(70, 25), a: R(3) });
+  // each puddle is a small cluster of overlapping pools, so the outline is irregular
+  for (let i = 0; i < 12; i++) {
+    const x = R(S), y = R(S);
+    for (let k = 0; k < 4; k++) puddles.push({ x: x + R(60, -60), y: y + R(40, -40), rx: R(52, 16), ry: R(30, 10), a: R(3) });
+  }
+  const eachPuddle = (ctx, fn) => {
+    for (const p of puddles) for (const ox of [-S, 0, S]) for (const oy of [-S, 0, S]) {
+      if (p.x + ox < -130 || p.x + ox > S + 130 || p.y + oy < -130 || p.y + oy > S + 130) continue;
+      ctx.save();
+      ctx.translate(p.x + ox, p.y + oy); ctx.rotate(p.a); ctx.scale(p.rx, p.ry);
+      fn();
+      ctx.restore();
+    }
+  };
+  const slab = (ctx, s, inset, rad) => { ctx.beginPath(); ctx.roundRect(s.x + inset, s.y + inset, s.w - inset * 2, s.h - inset * 2, rad); ctx.fill(); };
   const map = canvasTex(S, S, (ctx) => {
-    ctx.fillStyle = '#080a0e';
+    ctx.fillStyle = '#060708';
     ctx.fillRect(0, 0, S, S);
     for (const s of stones) {
-      const l = 30 + s.tone * 22;
-      ctx.fillStyle = `rgb(${l * 0.86},${l * 0.95},${l * 1.12})`;
-      const g = 4;
-      ctx.beginPath();
-      ctx.roundRect(s.x + g, s.y + g, s.w - g * 2, s.h - g * 2, 9);
-      ctx.fill();
-      // worn highlight edge
-      ctx.strokeStyle = 'rgba(160,180,210,0.07)';
-      ctx.lineWidth = 3;
+      const l = 44 + s.tone * 30;
+      const warm = (s.wet - 0.5) * 5;
+      ctx.fillStyle = `rgb(${l * 0.97 + warm},${l * 0.98},${l * 1.03 - warm})`;
+      slab(ctx, s, 3, 7);
+    }
+    blotches(ctx, S, S, 160, 20, 90, 0.07, true);
+    blotches(ctx, S, S, 220, 14, 70, 0.16, false);
+    speckle(ctx, S, S, 9000, 0.1, true, 2);
+    speckle(ctx, S, S, 12000, 0.3, false, 2);
+    // hairline cracks
+    ctx.strokeStyle = 'rgba(0,0,0,0.5)'; ctx.lineWidth = 1;
+    for (let i = 0; i < 46; i++) {
+      let x = R(S), y = R(S);
+      ctx.beginPath(); ctx.moveTo(x, y);
+      for (let k = 0; k < 5; k++) { x += R(26, -26); y += R(22, -22); ctx.lineTo(x, y); }
       ctx.stroke();
     }
-    speckle(ctx, S, S, 5000, 0.07, true);
-    speckle(ctx, S, S, 5000, 0.2, false);
-    for (const p of puddles) {
+    // re-darken the joints over the mottling
+    ctx.strokeStyle = 'rgba(3,4,5,0.85)'; ctx.lineWidth = 5;
+    for (const s of stones) { ctx.beginPath(); ctx.roundRect(s.x, s.y, s.w, s.h, 6); ctx.stroke(); }
+    eachPuddle(ctx, () => {
       const gr = ctx.createRadialGradient(0, 0, 0, 0, 0, 1);
-      gr.addColorStop(0, 'rgba(4,7,12,0.85)');
-      gr.addColorStop(0.7, 'rgba(4,7,12,0.6)');
-      gr.addColorStop(1, 'rgba(4,7,12,0)');
-      ctx.save();
-      ctx.translate(p.x, p.y); ctx.rotate(p.a); ctx.scale(p.rx, p.ry);
+      gr.addColorStop(0, 'rgba(6,8,11,0.3)'); gr.addColorStop(0.7, 'rgba(6,8,11,0.22)'); gr.addColorStop(1, 'rgba(6,8,11,0)');
       ctx.fillStyle = gr;
       ctx.beginPath(); ctx.arc(0, 0, 1, 0, 7); ctx.fill();
-      ctx.restore();
-    }
+    });
   });
   const rough = canvasTex(S, S, (ctx) => {
-    ctx.fillStyle = 'rgb(190,190,190)';
+    ctx.fillStyle = 'rgb(150,150,150)'; // joints: gritty
     ctx.fillRect(0, 0, S, S);
     for (const s of stones) {
-      const v = 50 + s.wet * 55;
+      const v = 62 + s.wet * 58; // wet slabs: 0.24 – 0.47
       ctx.fillStyle = `rgb(${v},${v},${v})`;
-      ctx.beginPath();
-      ctx.roundRect(s.x + 4, s.y + 4, s.w - 8, s.h - 8, 9);
-      ctx.fill();
+      slab(ctx, s, 4, 7);
     }
-    speckle(ctx, S, S, 3000, 0.12, true);
-    for (const p of puddles) {
-      ctx.save();
-      ctx.translate(p.x, p.y); ctx.rotate(p.a); ctx.scale(p.rx, p.ry);
-      ctx.fillStyle = 'rgb(10,10,10)';
-      ctx.beginPath(); ctx.arc(0, 0, 0.8, 0, 7); ctx.fill();
-      ctx.restore();
-    }
+    blotches(ctx, S, S, 140, 16, 70, 0.14, true);
+    blotches(ctx, S, S, 140, 16, 70, 0.2, false);
+    speckle(ctx, S, S, 6000, 0.14, true, 2);
+    eachPuddle(ctx, () => {
+      const gr = ctx.createRadialGradient(0, 0, 0, 0, 0, 1);
+      gr.addColorStop(0, 'rgba(34,34,34,1)'); gr.addColorStop(0.7, 'rgba(34,34,34,0.9)'); gr.addColorStop(1, 'rgba(34,34,34,0)');
+      ctx.fillStyle = gr;
+      ctx.beginPath(); ctx.arc(0, 0, 1, 0, 7); ctx.fill();
+    });
   }, false);
-  return { map, rough };
+  const normal = normalFromHeight(S, S, (ctx) => {
+    ctx.fillStyle = 'rgb(40,40,40)';
+    ctx.fillRect(0, 0, S, S);
+    for (const s of stones) {
+      // each slab is a shallow tilted plane with rounded shoulders
+      const cx = s.x + s.w / 2, cy = s.y + s.h / 2;
+      const dx = Math.cos(s.tilt) * s.w * 0.5, dy = Math.sin(s.tilt) * s.h * 0.5;
+      for (const [inset, add] of [[2, -60], [4, -28], [6, -10], [8, 0]]) {
+        const g = ctx.createLinearGradient(cx - dx, cy - dy, cx + dx, cy + dy);
+        const b = 170 + add;
+        g.addColorStop(0, `rgb(${b - s.amt},${b - s.amt},${b - s.amt})`);
+        g.addColorStop(1, `rgb(${b + s.amt},${b + s.amt},${b + s.amt})`);
+        ctx.fillStyle = g;
+        slab(ctx, s, inset, 8);
+      }
+    }
+    blotches(ctx, S, S, 300, 6, 30, 0.1, true);
+    blotches(ctx, S, S, 400, 4, 22, 0.14, false);
+    speckle(ctx, S, S, 14000, 0.16, false, 2);
+    eachPuddle(ctx, () => { // standing water fills to a level surface
+      const gr = ctx.createRadialGradient(0, 0, 0, 0, 0, 1);
+      gr.addColorStop(0, 'rgba(150,150,150,1)'); gr.addColorStop(0.82, 'rgba(150,150,150,1)'); gr.addColorStop(1, 'rgba(150,150,150,0)');
+      ctx.fillStyle = gr;
+      ctx.beginPath(); ctx.arc(0, 0, 1, 0, 7); ctx.fill();
+    });
+  }, 3.2);
+  return { map, rough, normal };
 }
 
 function plasterTexture() {
   return canvasTex(512, 512, (ctx, w, h) => {
-    ctx.fillStyle = '#5c6470';
+    ctx.fillStyle = '#565a60';
     ctx.fillRect(0, 0, w, h);
+    blotches(ctx, w, h, 60, 20, 90, 0.07, true);
+    blotches(ctx, w, h, 80, 20, 90, 0.12, false);
     speckle(ctx, w, h, 4000, 0.06, true);
     speckle(ctx, w, h, 4000, 0.12, false);
     // rain streaks and damp base
@@ -116,30 +144,47 @@ function plasterTexture() {
   });
 }
 
+function grainStreaks(ctx, w, h, n, light, dark) {
+  for (let i = 0; i < n; i++) {
+    const x = R(w), ww = R(3, 0.6);
+    ctx.fillStyle = R() < 0.5 ? light(R()) : dark(R());
+    ctx.fillRect(x, 0, ww, h);
+    if (x + ww > w) ctx.fillRect(x - w, 0, ww, h);
+  }
+}
 function timberTexture() {
   return canvasTex(256, 512, (ctx, w, h) => {
-    ctx.fillStyle = '#2c1d14';
+    ctx.fillStyle = '#2b2019';
     ctx.fillRect(0, 0, w, h);
-    for (let i = 0; i < 90; i++) {
-      ctx.fillStyle = `rgba(${R(90, 20)},${R(50, 10)},${R(30, 5)},${R(0.25)})`;
-      ctx.fillRect(R(w), 0, R(4, 1), h);
+    grainStreaks(ctx, w, h, 150, (a) => `rgba(96,72,52,${a * 0.22})`, (a) => `rgba(8,5,3,${a * 0.4})`);
+    for (let i = 0; i < 5; i++) { // knots
+      const x = R(w), y = R(h);
+      for (let r = 12; r > 2; r -= 3) { ctx.strokeStyle = `rgba(10,6,4,${0.2 + R(0.2)})`; ctx.lineWidth = 1.4; ctx.beginPath(); ctx.ellipse(x, y, r * 0.6, r * 1.5, 0, 0, 7); ctx.stroke(); }
     }
     for (let x = 0; x < w; x += 64) {
-      ctx.fillStyle = 'rgba(0,0,0,0.55)';
+      ctx.fillStyle = 'rgba(0,0,0,0.6)';
       ctx.fillRect(x, 0, 3, h);
     }
   });
 }
+function timberNormal() {
+  return normalFromHeight(256, 512, (ctx, w, h) => {
+    ctx.fillStyle = '#808080';
+    ctx.fillRect(0, 0, w, h);
+    grainStreaks(ctx, w, h, 220, (a) => `rgba(255,255,255,${a * 0.3})`, (a) => `rgba(0,0,0,${a * 0.45})`);
+    for (let x = 0; x < w; x += 64) { ctx.fillStyle = 'rgba(0,0,0,0.9)'; ctx.fillRect(x, 0, 4, h); }
+  }, 2.4);
+}
 
 function roofTexture() {
   return canvasTex(256, 256, (ctx, w, h) => {
-    ctx.fillStyle = '#161b24';
+    ctx.fillStyle = '#14171c';
     ctx.fillRect(0, 0, w, h);
     for (let x = 0; x < w; x += 32) {
       const g = ctx.createLinearGradient(x, 0, x + 32, 0);
-      g.addColorStop(0, 'rgba(0,0,0,0.6)');
-      g.addColorStop(0.5, 'rgba(90,110,140,0.35)');
-      g.addColorStop(1, 'rgba(0,0,0,0.6)');
+      g.addColorStop(0, 'rgba(0,0,0,0.65)');
+      g.addColorStop(0.5, 'rgba(70,78,90,0.3)');
+      g.addColorStop(1, 'rgba(0,0,0,0.65)');
       ctx.fillStyle = g;
       ctx.fillRect(x, 0, 32, h);
     }
@@ -147,19 +192,46 @@ function roofTexture() {
       ctx.fillStyle = 'rgba(0,0,0,0.5)';
       ctx.fillRect(0, y, w, 4);
     }
+    speckle(ctx, w, h, 900, 0.2, false);
   });
+}
+function roofNormal() {
+  return normalFromHeight(256, 256, (ctx, w, h) => {
+    for (let x = 0; x < w; x += 32) { // half-round tiles
+      const g = ctx.createLinearGradient(x, 0, x + 32, 0);
+      g.addColorStop(0, '#202020'); g.addColorStop(0.5, '#e0e0e0'); g.addColorStop(1, '#202020');
+      ctx.fillStyle = g;
+      ctx.fillRect(x, 0, 32, h);
+    }
+    for (let y = 0; y < h; y += 42) {
+      const g = ctx.createLinearGradient(0, y, 0, y + 10);
+      g.addColorStop(0, 'rgba(0,0,0,0.6)'); g.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = g; ctx.fillRect(0, y, w, 10);
+    }
+  }, 3);
+}
+function plasterNormal() {
+  return normalFromHeight(256, 256, (ctx, w, h) => {
+    ctx.fillStyle = '#808080';
+    ctx.fillRect(0, 0, w, h);
+    blotches(ctx, w, h, 200, 5, 26, 0.16, true);
+    blotches(ctx, w, h, 200, 5, 26, 0.16, false);
+    speckle(ctx, w, h, 3000, 0.2, false, 2);
+  }, 1.6);
 }
 
 function windowTexture(kind) {
   return canvasTex(256, 256, (ctx, w, h) => {
-    const g = ctx.createRadialGradient(w * 0.5, h * 0.62, 10, w * 0.5, h * 0.5, w * 0.75);
-    g.addColorStop(0, '#ffe2a0');
-    g.addColorStop(0.5, '#f5a040');
-    g.addColorStop(1, '#a84a12');
+    // lamplit paper: pale and uneven, brightest low down where the lamp sits
+    const g = ctx.createRadialGradient(w * 0.5, h * 0.66, 10, w * 0.5, h * 0.5, w * 0.8);
+    g.addColorStop(0, '#f6dba6');
+    g.addColorStop(0.5, '#cf9a58');
+    g.addColorStop(1, '#6e4420');
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, w, h);
+    blotches(ctx, w, h, 30, 10, 50, 0.07, false);
     // drifting silhouettes behind paper
-    ctx.fillStyle = 'rgba(90,35,8,0.35)';
+    ctx.fillStyle = 'rgba(70,35,14,0.35)';
     for (let i = 0; i < 3; i++) {
       const x = R(w * 0.8, w * 0.2);
       ctx.beginPath(); ctx.ellipse(x, h * 0.95, R(40, 22), R(110, 60), 0, 0, 7); ctx.fill();
@@ -187,12 +259,13 @@ function windowTexture(kind) {
 function lanternTexture() {
   return canvasTex(128, 128, (ctx, w, h) => {
     const g = ctx.createLinearGradient(0, 0, 0, h);
-    g.addColorStop(0, '#d8641c');
-    g.addColorStop(0.5, '#ffd27a');
-    g.addColorStop(1, '#c8500f');
+    g.addColorStop(0, '#8e4a20');
+    g.addColorStop(0.55, '#f3d49a');
+    g.addColorStop(1, '#a35a24');
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, w, h);
-    ctx.strokeStyle = 'rgba(70,20,5,0.55)';
+    blotches(ctx, w, h, 14, 8, 30, 0.08, false);
+    ctx.strokeStyle = 'rgba(40,16,6,0.6)';
     ctx.lineWidth = 3;
     for (let x = 0; x <= w; x += 16) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke(); }
   });
@@ -289,13 +362,14 @@ export function buildWorld(scene, quality) {
   const L = ARENA.lane;
   const world = { lanterns: [], gears: [], chains: [], emitters: [], flickers: [] };
 
-  scene.background = new THREE.Color(0x060a12);
-  scene.fog = new THREE.FogExp2(0x0b1220, 0.024);
+  scene.background = new THREE.Color(0x05080e);
+  scene.fog = new THREE.FogExp2(0x0a101a, 0.03);
 
-  // ---- lights: cold moon + sky against warm lanterns
-  const hemi = new THREE.HemisphereLight(0x5f7fae, 0x141018, 0.75);
+  // ---- lights: a dim, cool sky and moon hold the shadows; the lanterns do the real lighting
+  const HEMI = 0.2;
+  const hemi = new THREE.HemisphereLight(0x51688c, 0x0c0b0d, HEMI);
   scene.add(hemi);
-  const moon = new THREE.DirectionalLight(0x86a8e0, 1.25);
+  const moon = new THREE.DirectionalLight(0x7f9cd0, 0.5);
   moon.position.set(-9, 20, 7);
   moon.target.position.set(0, 0, 0);
   scene.add(moon, moon.target);
@@ -310,31 +384,47 @@ export function buildWorld(scene, quality) {
 
   const M = (o) => new THREE.MeshStandardMaterial(o);
   const fl = flagstoneTextures();
-  fl.map.repeat.set(9, 9); fl.rough.repeat.set(9, 9);
-  const groundMat = M({ map: fl.map, roughnessMap: fl.rough, roughness: 1, metalness: 0.0, color: 0xc8d4ea });
+  // Three material families that must read differently: wet stone (glossy, reflective, bumpy),
+  // timber and plaster (matte, grainy), metal (fully metallic, tight highlights).
+  const D = detailMaps();
+  const rep = (t, x, y) => { const c = t.clone(); c.repeat.set(x, y); c.needsUpdate = true; return c; };
+  const V2 = (v) => new THREE.Vector2(v, v);
+  for (const t of [fl.map, fl.rough, fl.normal]) t.repeat.set(9, 9);
+  const groundMat = M({ map: fl.map, roughnessMap: fl.rough, normalMap: fl.normal, normalScale: V2(1.1), roughness: 1, metalness: 0, color: 0xb9bec8 });
   const plasterT = plasterTexture();
-  const plaster = M({ map: plasterT, roughness: 0.9, color: 0xaab4c4 });
+  const plasterN = plasterNormal();
+  plasterN.repeat.set(3, 3);
+  const plaster = M({ map: plasterT, normalMap: plasterN, normalScale: V2(0.7), roughness: 0.96, color: 0x9a9da3 });
   const timberT = timberTexture();
-  const timber = M({ map: timberT, roughness: 0.75, color: 0xb09a88 });
-  const darkWood = M({ color: 0x1c130d, roughness: 0.8 });
+  const timberN = timberNormal();
+  const timber = M({ map: timberT, normalMap: timberN, normalScale: V2(0.9), roughness: 0.88, color: 0xa39486 });
+  const darkWood = M({ map: timberT, normalMap: timberN, normalScale: V2(0.8), color: 0x5a4a40, roughness: 0.84 });
   const roofT = roofTexture();
   roofT.repeat.set(10, 1);
-  const roof = M({ map: roofT, roughness: 0.35, metalness: 0.1, color: 0x9fb0cc });
-  const iron = M({ color: 0x20242b, roughness: 0.45, metalness: 0.85 });
-  const copper = M({ color: 0x9a5a2c, roughness: 0.38, metalness: 0.9 });
-  const brass = M({ color: 0xb08a3c, roughness: 0.35, metalness: 0.9 });
-  const stone = M({ color: 0x3a424e, roughness: 0.8 });
+  const roofN = roofNormal();
+  roofN.repeat.set(10, 1);
+  const roof = M({ map: roofT, normalMap: roofN, normalScale: V2(1.2), roughness: 0.34, metalness: 0, color: 0x8f98a8 });
+  const iron = M({ color: 0x2b2e33, roughness: 0.5, metalness: 1, roughnessMap: rep(D.smudge, 2, 2), normalMap: rep(D.hammered, 2, 2), normalScale: V2(0.4) });
+  const copper = M({ color: 0x8a5a3c, roughness: 0.36, metalness: 1, roughnessMap: rep(D.smudge, 3, 1), normalMap: rep(D.hammered, 3, 1), normalScale: V2(0.3) });
+  const brass = M({ color: 0x8a7038, roughness: 0.38, metalness: 1, roughnessMap: rep(D.smudge, 2, 1) });
+  const stone = M({ color: 0x43464b, roughness: 0.8, normalMap: rep(D.leather, 6, 1), normalScale: V2(1.2) });
   const winT = windowTexture('lattice');
   const doorT = windowTexture('door');
   winT.wrapS = winT.wrapT = doorT.wrapS = doorT.wrapT = THREE.ClampToEdgeWrapping;
-  const winMat = new THREE.MeshBasicMaterial({ map: winT, color: 0xffffff, fog: false });
-  const winDim = new THREE.MeshBasicMaterial({ map: winT, color: 0xb08860 });
-  const doorMat = new THREE.MeshBasicMaterial({ map: doorT, color: 0xf0d8c0 });
+  // emissive surfaces are given real (above-white) brightness so they tone-map like light
+  // sources and show up in the reflection capture
+  const hdr = (hex, k) => new THREE.Color(hex).multiplyScalar(k);
+  const winMat = new THREE.MeshBasicMaterial({ map: winT, color: hdr(0xffe6c4, 1.5) });
+  const winDim = new THREE.MeshBasicMaterial({ map: winT, color: hdr(0xc8a888, 0.5) });
+  const doorMat = new THREE.MeshBasicMaterial({ map: doorT, color: hdr(0xffe2c0, 1.25) });
   const lanT = lanternTexture();
-  const lanMat = new THREE.MeshBasicMaterial({ map: lanT, color: 0xffffff, fog: false });
+  const lanMat = new THREE.MeshBasicMaterial({ map: lanT, color: hdr(0xffe4c0, 2.6), fog: false });
   const glowT = glowTexture();
-  const warmGlow = new THREE.SpriteMaterial({ map: glowT, color: 0xff9a3c, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, opacity: 0.55, fog: false });
+  const warmGlow = new THREE.SpriteMaterial({ map: glowT, color: 0xff9c48, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, opacity: 0.26, fog: false });
   const floorGlowMat = new THREE.MeshBasicMaterial({ map: glowT, color: 0xff8a30, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, opacity: 0.3, fog: false });
+  // things the camera can get close to (lanterns, chains, the gate) fade out near the lens
+  const faders = [];
+  const fadeMat = (m) => { const c = m.clone(); c.transparent = true; c.userData.base = c.opacity; return c; };
 
   const add = (mesh, cast = true, recv = true) => {
     mesh.castShadow = cast && !low; mesh.receiveShadow = recv && !low;
@@ -355,7 +445,7 @@ export function buildWorld(scene, quality) {
   };
   const floorGlow = (x, z, sx, sz, op = 0.3, color = 0xff8a30) => {
     const mat = floorGlowMat.clone();
-    mat.opacity = op; mat.color.set(color);
+    mat.opacity = op * 0.3; mat.color.set(color); // only a hint: the real pools of light come from the lanterns
     const m = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), mat);
     m.rotation.x = -Math.PI / 2;
     m.position.set(x, 0.03, z);
@@ -377,18 +467,22 @@ export function buildWorld(scene, quality) {
   function lantern(x, y, z, opts = {}) {
     const g = new THREE.Group();
     g.position.set(x, y, z);
-    const body = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.46, 10), lanMat);
+    const mats = [fadeMat(lanMat), fadeMat(darkWood), fadeMat(iron), fadeMat(new THREE.MeshStandardMaterial({ color: 0x5a1c14, roughness: 0.9 })), fadeMat(warmGlow)];
+    // paper drum that bulges slightly in the middle
+    const prof = [[0.12, 0.23], [0.17, 0.2], [0.2, 0.1], [0.205, 0], [0.2, -0.1], [0.17, -0.2], [0.12, -0.23]].map((p) => new THREE.Vector2(p[0], p[1]));
+    const body = new THREE.Mesh(new THREE.LatheGeometry(prof, 14), mats[0]);
     body.position.y = -0.42;
     g.add(body);
-    cyl(0.14, 0.22, 0.08, darkWood, 0, -0.16, 0, g, 10);
-    cyl(0.22, 0.12, 0.08, darkWood, 0, -0.68, 0, g, 10);
-    cyl(0.012, 0.012, 0.16, iron, 0, -0.06, 0, g, 4);
-    cyl(0.02, 0.005, 0.28, new THREE.MeshBasicMaterial({ color: 0xa02818 }), 0, -0.86, 0, g, 4);
-    const sp = new THREE.Sprite(warmGlow);
-    sp.scale.setScalar(opts.glow ?? 2.6);
+    cyl(0.1, 0.15, 0.06, mats[1], 0, -0.17, 0, g, 12);
+    cyl(0.15, 0.09, 0.06, mats[1], 0, -0.67, 0, g, 12);
+    cyl(0.012, 0.012, 0.16, mats[2], 0, -0.06, 0, g, 4);
+    cyl(0.018, 0.004, 0.26, mats[3], 0, -0.84, 0, g, 5);
+    const sp = new THREE.Sprite(mats[4]);
+    sp.scale.setScalar((opts.glow ?? 2.6) * 0.7);
     sp.position.y = -0.42;
     g.add(sp);
     scene.add(g);
+    faders.push({ x, z, y0: y - 0.98, y1: y, mats, a: 1 });
     let light = null;
     if (opts.light && lightBudget > 0) {
       lightBudget--;
@@ -536,9 +630,9 @@ export function buildWorld(scene, quality) {
       box(0.3, 0.05, 0.05, iron, x0 - 0.42, y, z);
     }
     // pressure gauge with a cold glow
-    const gauge = new THREE.Mesh(new THREE.CircleGeometry(0.2, 16), new THREE.MeshBasicMaterial({ color: 0x9fe8ff }));
+    const gauge = new THREE.Mesh(new THREE.CircleGeometry(0.2, 16), new THREE.MeshBasicMaterial({ color: 0x5f8f96 }));
     gauge.rotation.y = -Math.PI / 2;
-    gauge.position.set(x0 - 0.5, 2.05, 1.2);
+    gauge.position.set(x0 - 0.512, 2.05, 1.2);
     scene.add(gauge);
     cyl(0.24, 0.24, 0.08, brass, x0 - 0.46, 2.05, 1.2).rotation.z = Math.PI / 2;
     world.emitters.push({ x: x0 - 0.5, y: 3.05, z: -3.2, vx: -0.5, vy: 0.9, rate: 2.2 });
@@ -614,10 +708,12 @@ export function buildWorld(scene, quality) {
     box(5.0, 0.24, 0.3, darkWood, 0, 4.95, z0 + 0.4);
     // portcullis of iron bars, dropped on chains when the duel begins
     const gate = new THREE.Group();
-    for (let x = -1.4; x <= 1.41; x += 0.4) cyl(0.045, 0.045, 3.4, iron, x, 1.7, 0, gate, 6);
-    for (const y of [0.5, 1.7, 2.9]) box(3.2, 0.09, 0.09, iron, 0, y, 0, gate);
+    const gateIron = fadeMat(iron);
+    world.gateFade = { mat: gateIron, z: z0 + 0.3, a: 1 };
+    for (let x = -1.4; x <= 1.41; x += 0.4) cyl(0.045, 0.045, 3.4, gateIron, x, 1.7, 0, gate, 6);
+    for (const y of [0.5, 1.7, 2.9]) box(3.2, 0.09, 0.09, gateIron, 0, y, 0, gate);
     for (let x = -1.4; x <= 1.41; x += 0.4) {
-      const tip = new THREE.Mesh(new THREE.ConeGeometry(0.07, 0.22, 6), iron);
+      const tip = new THREE.Mesh(new THREE.ConeGeometry(0.07, 0.22, 6), gateIron);
       tip.rotation.x = Math.PI;
       tip.position.set(x, 0.0, 0);
       gate.add(tip);
@@ -630,9 +726,9 @@ export function buildWorld(scene, quality) {
     sgn.position.set(0, 4.2, z0 + 0.77);
     scene.add(sgn);
     // lane lanterns
-    lantern(-1.25, 3.2, 11.6, { light: true, intensity: 20, lx: 0.5, range: 12 });
+    lantern(-1.25, 3.2, 11.6, { light: true, intensity: 12, lx: 0.6, range: 12 });
     bracket(-1.25, 3.22, 11.6, -1, 0, 0.4);
-    lantern(1.25, 3.2, 14.4, { light: true, intensity: 20, lx: -0.5, range: 12 });
+    lantern(1.25, 3.2, 14.4, { light: true, intensity: 12, lx: -0.6, range: 12 });
     bracket(1.25, 3.22, 14.4, 1, 0, 0.4);
     lantern(-1.25, 3.2, 17.0, {});
     floorGlow(0, 11.6, 3, 4, 0.22); floorGlow(0, 14.4, 3, 4, 0.22); floorGlow(0, 17, 3, 3, 0.15);
@@ -648,7 +744,9 @@ export function buildWorld(scene, quality) {
     const chain = (x, y, z, n, hook = true) => {
       const g = new THREE.Group();
       g.position.set(x, y, z);
-      const im = new THREE.InstancedMesh(linkG, iron, n);
+      const cm = fadeMat(iron);
+      faders.push({ x, z, y0: y - n * 0.115 - 0.3, y1: y, mats: [cm], a: 1 });
+      const im = new THREE.InstancedMesh(linkG, cm, n);
       const m4 = new THREE.Matrix4();
       const q = new THREE.Quaternion();
       const e = new THREE.Euler();
@@ -660,7 +758,7 @@ export function buildWorld(scene, quality) {
       }
       g.add(im);
       if (hook) {
-        const h = new THREE.Mesh(new THREE.TorusGeometry(0.12, 0.03, 5, 10, Math.PI * 1.4), iron);
+        const h = new THREE.Mesh(new THREE.TorusGeometry(0.12, 0.03, 5, 10, Math.PI * 1.4), cm);
         h.position.y = -0.1 - n * 0.115 - 0.1;
         g.add(h);
       }
@@ -747,10 +845,28 @@ export function buildWorld(scene, quality) {
   }
 
   const bolt = { t: -1, next: 14 + R(10) };
-  const skyBase = new THREE.Color(0x060a12);
-  const fogBase = new THREE.Color(0x0b1220);
+  const skyBase = new THREE.Color(0x05080e);
+  const fogBase = new THREE.Color(0x0a101a);
   const skyFlash = new THREE.Color(0x4a628c);
-  world.update = (dt, time, gateClosed) => {
+  const setFade = (f, a) => {
+    if (Math.abs(a - f.a) < 0.004) return;
+    f.a = a;
+    for (const m of f.mats) m.opacity = m.userData.base * a;
+  };
+  world.update = (dt, time, gateClosed, camPos) => {
+    if (camPos) {
+      // fade anything hanging within arm's reach of the lens instead of letting the camera pass through it
+      for (const f of faders) {
+        const dy = camPos.y > f.y1 ? camPos.y - f.y1 : camPos.y < f.y0 ? f.y0 - camPos.y : 0;
+        const d = Math.hypot(camPos.x - f.x, camPos.z - f.z, dy);
+        const k = Math.max(0, Math.min(1, (d - 0.8) / 1.4));
+        setFade(f, k * k * (3 - 2 * k));
+      }
+      const gf = world.gateFade;
+      const gd = Math.abs(camPos.x) < 2.2 ? Math.abs(camPos.z - gf.z) : 9;
+      const gk = Math.max(0, Math.min(1, (gd - 0.25) / 0.9));
+      if (Math.abs(gk - gf.a) > 0.004) { gf.a = gk; gf.mat.opacity = gk; }
+    }
     for (const l of world.lanterns) {
       l.g.rotation.z = Math.sin(time * 1.3 + l.ph) * 0.05;
       l.g.rotation.x = Math.cos(time * 1.1 + l.ph * 2) * 0.04;
@@ -780,10 +896,10 @@ export function buildWorld(scene, quality) {
       bolt.t += dt;
       const b = bolt.t;
       const k = b < 0.07 ? 1 : b < 0.15 ? 0.15 : b < 0.26 ? 0.75 : Math.max(0, 1 - (b - 0.26) / 0.6) * 0.45;
-      hemi.intensity = 0.75 + k * 1.6;
+      hemi.intensity = HEMI + k * 1.4;
       scene.background.copy(skyBase).lerp(skyFlash, k * 0.7);
       scene.fog.color.copy(fogBase).lerp(skyFlash, k * 0.5);
-      if (b > 0.9) { bolt.t = -1; hemi.intensity = 0.75; scene.background.copy(skyBase); scene.fog.color.copy(fogBase); }
+      if (b > 0.9) { bolt.t = -1; hemi.intensity = HEMI; scene.background.copy(skyBase); scene.fog.color.copy(fogBase); }
     }
     const target = gateClosed ? 0.05 : 3.5;
     const gy = world.gate.position.y;
