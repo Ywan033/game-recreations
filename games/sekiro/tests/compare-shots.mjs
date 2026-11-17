@@ -14,7 +14,9 @@ const root = path.resolve(here, '..');
 const args = process.argv.slice(2);
 const prefix = args.find((a) => !a.startsWith('--')) || 'after';
 const extra = args.includes('--extra');
-const outDir = path.join(root, 'compare');
+// --dir=<name> writes into compare/<name>/ (e.g. --dir=controls for the controls pass evidence)
+const sub = (args.find((a) => a.startsWith('--dir=')) || '').slice(6);
+const outDir = path.join(root, 'compare', sub);
 const revDir = path.join(outDir, 'review');
 fs.mkdirSync(outDir, { recursive: true });
 if (extra) fs.mkdirSync(revDir, { recursive: true });

@@ -1,6 +1,6 @@
 // The arena: a trampled islet in a reed fen at night, lit by one low moon. All procedural.
 import * as THREE from 'three/webgpu';
-import { positionLocal, time, sin, vec3, instanceIndex, uv, mix, color, instancedBufferAttribute, smoothstep, cameraPosition } from 'three/tsl';
+import { positionLocal, time, uniform, sin, vec3, instanceIndex, uv, mix, color, instancedBufferAttribute, smoothstep, cameraPosition } from 'three/tsl';
 import { C } from './sim.js';
 
 // The single key light. Everything that shades by the moon (sky, light, shadows, rim) reads this.
@@ -197,10 +197,16 @@ export function buildWorld(scene, low) {
     g.setIndex(idx); g.computeVertexNormals();
     return g;
   };
+  const windT = uniform(0), windK = uniform(1);
+  // wind strength wanders between lulls (~0.3) and strong swells (~1.25); two incommensurate periods, no audible/visible loop
+  const windStrength = (t) => 0.78 + 0.3 * Math.sin(t * 0.21 + 1.3) + 0.17 * Math.sin(t * 0.083 + 4.1);
+  world.gustAt = (x, z, t) => Math.max(0, Math.min(1, (Math.sin(t * 0.85 - (x * WIND.x + z * WIND.y) * 0.32) * 0.5 + 0.5) * windStrength(t) / 1.25));
   const windMat = (base, tip, plumeCol, glint, clearCam = false) => (aw) => {
     const m = new THREE.MeshStandardNodeMaterial({ side: THREE.DoubleSide, roughness: 0.85 });
     const h = uv().y, idxf = instanceIndex.toFloat();
-    const gust = sin(time.mul(0.85).sub(aw.x)).mul(0.5).add(0.5); // slow waves crossing the field
+    // slow waves crossing the field, scaled by a slowly wandering wind strength. windT/windK are set
+    // from world.update, and world.gustAt() evaluates the same expression for the audio.
+    const gust = sin(windT.mul(0.85).sub(aw.x)).mul(0.5).add(0.5).mul(windK);
     const flutter = sin(time.mul(3.1).add(idxf.mul(1.71))).mul(0.14).add(sin(time.mul(1.7).add(idxf.mul(0.37))).mul(0.2));
     const bend = h.mul(h).mul(gust.mul(0.75).add(0.25).add(flutter)).mul(aw.y);
     // (the offset is applied after the instance transform, so it is already in world units)
@@ -325,7 +331,27 @@ export function buildWorld(scene, low) {
     }
   };
 
+  // --- a sparse light drizzle: thin, faint streaks falling with the wind around the camera. The
+  // audio bed carries a distant drizzle and single drops, so the picture shows the same weather.
+  const RN = low ? 50 : 150, rainPos = new Float32Array(RN * 6), rd = [];
+  for (let i = 0; i < RN; i++) rd.push({ x: (R() - 0.5) * 26, z: (R() - 0.5) * 26, y: R() * 9, v: 8.5 + R() * 3.5, l: 0.1 + R() * 0.1 });
+  const rainGeo = new THREE.BufferGeometry(); rainGeo.setAttribute('position', new THREE.BufferAttribute(rainPos, 3));
+  const rain = new THREE.LineSegments(rainGeo, new THREE.LineBasicMaterial({ color: 0xb8c8dc, transparent: true, opacity: 0.1, depthWrite: false }));
+  rain.frustumCulled = false; rain.renderOrder = 6; scene.add(rain);
+  let rainT = 0;
+
   world.update = (t, camera) => {
+    windT.value = t; windK.value = windStrength(t);
+    const rdt = Math.min(0.1, Math.max(0, t - rainT)); rainT = t;
+    const cx = camera.position.x, cz = camera.position.z;
+    for (let i = 0; i < RN; i++) {
+      const q = rd[i];
+      q.y -= q.v * rdt; q.x += WIND.x * 1.6 * rdt; q.z += WIND.y * 1.6 * rdt;
+      if (q.y < 0) { q.y += 9; q.x = (R() - 0.5) * 26; q.z = (R() - 0.5) * 26; }
+      const x = cx + q.x, z = cz + q.z;
+      rainPos.set([x, q.y, z, x + WIND.x * 0.19 * q.l, q.y + q.l, z + WIND.y * 0.19 * q.l], i * 6);
+    }
+    rainGeo.attributes.position.needsUpdate = true;
     for (const m of mists) { const u = m.userData; u.a += u.sp * 0.016; m.position.x = Math.sin(u.a) * u.r; m.position.z = Math.cos(u.a) * u.r; m.lookAt(camera.position.x, m.position.y, camera.position.z); }
     for (let i = 0; i < FN; i++) {
       const f = fd[i], a = f.a + Math.sin(t * f.s + f.p) * 0.3;

@@ -29,7 +29,11 @@ function ok(cond, label, detail = '') {
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const browser = await chromium.launch({ args: ['--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
+// default: bundled Chromium on software rendering (the launcher's environment; the page reports WebGL 2).
+// --gpu: installed Chrome with hardware flags, to run the same suite on the WebGPU backend (extra coverage, not part of test:offline).
+const browser = process.argv.includes('--gpu')
+  ? await chromium.launch({ channel: 'chrome', args: ['--enable-unsafe-webgpu', '--enable-features=Vulkan', '--ignore-gpu-blocklist', '--use-angle=d3d11', '--enable-gpu'] })
+  : await chromium.launch({ args: ['--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
 const pageErrors = [];
 const external = [];
 
@@ -67,7 +71,61 @@ async function renderStats(page, name) {
   return { colors: colors.size, std: Math.sqrt(sum2 / n - (sum / n) ** 2), mean: sum / n };
 }
 
-// Reactive duelling with real inputs: right mouse button for guard/Glance, W+Space for the Bind-Step, F for the Moonwheel.
+// Keep away from the Warden with real movement keys until it is walking (not mid-move) and far
+// enough that no blow can land for about a second and a half. Used before checks that need a quiet moment.
+async function clear(g, minDist = 7.5, timeout = 40000) {
+  const { page, snap } = g; const t0 = Date.now(); let s, sawAttack = false;
+  const held = { KeyW: false, KeyA: false, KeyS: false, KeyD: false };
+  const set = async (k, v) => { if (held[k] !== v) { held[k] = v; await page.keyboard[v ? 'down' : 'up'](k); } };
+  try {
+    for (;;) {
+      s = await snap();
+      if (s.mode !== 'fight') throw new Error(`[${current}] fight ended (${s.mode}) while backing off`);
+      // quiet: the Warden is far off, or it has just finished a move (its pause before the next one
+      // plus the next wind-up leave well over a second)
+      if (s.boss.state === 'attack') sawAttack = true;
+      if (s.boss.state === 'approach' && ['idle', 'guard'].includes(s.player.state) && (s.dist > minDist || (sawAttack && s.dist > 3.5))) return s;
+      if (Date.now() - t0 > timeout) throw new Error(`[${current}] timeout while backing off: ${JSON.stringify(s).slice(0, 500)}`);
+      // circling out of reach for a while without the Warden committing: stand still and let it come
+      if (!sawAttack && Date.now() - t0 > 2500 && s.boss.state === 'approach') { for (const k in held) await set(k, false); await sleep(25); continue; }
+      // head for the far side of the clearing from the Warden, never running into it; the keys are
+      // chosen from the camera heading the same way a player reads the screen
+      const p = s.player, b = s.boss, br = Math.hypot(b.x, b.z);
+      const tx = br > 0.5 ? -b.x / br * 9.6 : (p.x - b.x) / s.dist * 9.6, tz = br > 0.5 ? -b.z / br * 9.6 : (p.z - b.z) / s.dist * 9.6;
+      let gx = tx - p.x, gz = tz - p.z; const gl = Math.hypot(gx, gz);
+      if (gl < 0.6) { for (const k in held) await set(k, false); await sleep(25); continue; }
+      gx /= gl; gz /= gl;
+      const ux = (b.x - p.x) / s.dist, uz = (b.z - p.z) / s.dist, fx = Math.sin(s.camera.yaw), fz = Math.cos(s.camera.yaw);
+      let best = null;
+      for (const f of [-1, 0, 1]) for (const r of [-1, 0, 1]) {
+        if (!f && !r) continue;
+        const l = Math.hypot(f, r), mx = (fx * f - fz * r) / l, mz = (fz * f + fx * r) / l;
+        if (s.dist < 6 && mx * ux + mz * uz > 0.3) continue; // not toward the Warden when it is near
+        const score = mx * gx + mz * gz - (s.dist < 6 ? 0.8 * (mx * ux + mz * uz) : 0);
+        if (!best || score > best.score) best = { f, r, score };
+      }
+      if (process.argv.includes('--kite-debug') && Math.random() < 0.05) console.log('kite', s.dist.toFixed(1), b.state, b.x.toFixed(1), b.z.toFixed(1), 'p', p.x.toFixed(1), p.z.toFixed(1), p.state, best.f, best.r, 'yaw', s.camera.yaw.toFixed(2), 'lock', s.camera.lock);
+      await set('KeyW', best.f > 0); await set('KeyS', best.f < 0); await set('KeyD', best.r > 0); await set('KeyA', best.r < 0);
+      await sleep(25);
+    }
+  } finally { for (const k in held) await set(k, false); }
+}
+// Run `fn` in a quiet moment; if the Warden lands a blow meanwhile, back off and try again.
+async function quiet(g, label, fn, tries = 6) {
+  for (let i = 0; i < tries; i++) {
+    const a = await clear(g);
+    const before = results.length;
+    const r = await fn(a);
+    if ((r && r.done) || results.length > before) return r; // the check sampled its own result in time and recorded it
+    const b = await g.snap();
+    if (b.stats.hitsTaken === a.stats.hitsTaken && b.stats.guards === a.stats.guards && r !== 'retry') return r;
+    console.log(`  (retry ${label}: disturbed by the Warden)`);
+    await g.until((q) => ['idle', 'guard'].includes(q.player.state) || q.mode !== 'fight', 'recover', 8000);
+  }
+  throw new Error(`[${current}] no quiet moment for: ${label}`);
+}
+
+// Reactive duelling with real inputs: right mouse button for guard/Glance, W + Left Shift for the Bind-Step, F for the Moonwheel.
 async function duel(g, stop, label, timeout = 240000, onPrompt) {
   const { page, snap } = g;
   const t0 = Date.now();
@@ -86,7 +144,7 @@ async function duel(g, stop, label, timeout = 240000, onPrompt) {
       if (h && h.type === 'thrust') {
         if (h.inT <= 0.3 && h.inT > 0.03 && thrustSeq !== s.hitSeq && ['idle', 'guard'].includes(s.player.state)) {
           thrustSeq = s.hitSeq;
-          await page.keyboard.down('KeyW'); await page.keyboard.press('Space'); await sleep(140); await page.keyboard.up('KeyW'); wDown = false;
+          await page.keyboard.down('KeyW'); await page.keyboard.press('ShiftLeft'); await sleep(140); await page.keyboard.up('KeyW'); wDown = false;
         }
       } else if (h && !guardDown && h.inT <= 0.19) { await page.mouse.down({ button: 'right' }); guardDown = true; guardSeq = s.hitSeq; }
       await sleep(6);
@@ -212,7 +270,8 @@ async function winRun() {
   ok(s.boss.movesSeen[2][0] === 'string5', 'phase two opens with a new five-hit string', s.boss.movesSeen[2].join(','));
   ok(s.boss.movesSeen[2].some((m) => P2_ONLY.includes(m)), 'phase two uses moves absent from phase one');
   ok(s.stats.maxChain >= 3, 'chained Glances against a multi-hit string', `longest chain ${s.stats.maxChain}, total ${s.stats.deflects}`);
-  ok(s.stats.cues >= 1 && s.stats.counters >= 1, 'Bind-Step (step-in counter) against the dangerous thrust', `${s.stats.counters} of ${s.stats.cues} thrusts countered`);
+  ok(s.stats.jumps === 0, 'the fight was won without a single jump (Left Shift never jumps)');
+  ok(s.stats.cues >= 1 && s.stats.counters >= 1, 'Bind-Step with W + Left Shift against the dangerous thrust', `${s.stats.counters} of ${s.stats.cues} thrusts countered`);
   ok(s.stats.breaks === 2 && s.stats.finishers === 2, 'second stance break and second finisher');
   ok(s.mode === 'victory' && await page.locator('#result.win').isVisible(), 'victory screen shown');
   ok((await page.locator('#resSub').innerText()).length > 0, 'victory text present');
@@ -221,21 +280,31 @@ async function winRun() {
 
   // ---- retry from victory with the keyboard
   await sleep(600);
-  await page.keyboard.press('KeyR');
+  await page.keyboard.press('KeyR'); await page.keyboard.press('Space'); await page.keyboard.press('ShiftLeft');
+  await sleep(700); s = await snap();
+  ok(s.mode === 'victory' && await page.locator('#result.win').isVisible(), 'R (flask key), Space and Left Shift do nothing on the result screen');
+  await page.keyboard.press('Enter');
   s = await until((q) => q.mode === 'fight', 'retry after victory', 20000);
-  ok(s.boss.phase === 1 && s.boss.hp === 100 && s.player.hp === 100 && s.stats.deflects === 0, 'R restarts the fight from a clean state');
+  ok(s.boss.phase === 1 && s.boss.hp === 100 && s.player.hp === 100 && s.stats.deflects === 0 && s.player.flask === 3 && s.stats.drinks === 0, 'Enter restarts the fight from a clean state');
   ok(!(await page.locator('#result').isVisible()), 'result screen hidden after retry');
   await g.context.close();
 }
 
 async function lossRun() {
   current = 'loss-run';
-  // hurt=1.5 raises damage taken so the defeat arrives quickly (documented test option)
-  const g = await open('seed=5&q=low&hurt=1.5');
+  // hurt=0.5 (documented test option) halves damage taken so the flask checks, which need several
+  // real wounds, cannot end the fight early; the defeat then follows from standing still
+  const g = await open('seed=5&q=low&hurt=0.5');
   const { page, snap, until } = g;
   await page.keyboard.press('Enter');
   let s = await until((q) => q.mode === 'fight', 'fight start via Enter', 30000);
   ok(true, 'Enter key starts the fight');
+  // ---- flask at full health: refused, nothing consumed
+  await page.keyboard.press('KeyR');
+  s = await until((q) => q.stats.drinkFails >= 1, 'flask refusal at full health', 5000);
+  ok(s.player.flask === 3 && s.player.hp === 100 && s.stats.drinks === 0 && s.player.state !== 'drink', 'R at full health is refused and consumes nothing', `flask ${s.player.flask}`);
+  ok(await page.locator('#callout').innerText().then((t) => /full health/i.test(t)), 'refusal is shown on screen');
+  ok(/×3/.test(await page.locator('#flaskN').innerText()), 'HUD shows the remaining flask charges');
   // keyboard guard: hold K through at least one hit
   await page.keyboard.down('KeyK');
   s = await until((q) => q.stats.guards >= 1 || q.mode !== 'fight', 'guarded hit with K', 40000);
@@ -243,8 +312,58 @@ async function lossRun() {
   await page.keyboard.up('KeyK');
   // keyboard dodge registers
   const d0 = s.stats.dodges;
-  for (let i = 0; i < 30 && s.stats.dodges <= d0 && s.mode === 'fight'; i++) { await page.keyboard.press('Space'); await sleep(200); s = await snap(); }
-  ok(s.stats.dodges > d0, 'Space performs the step (dodge)');
+  for (let i = 0; i < 30 && s.stats.dodges <= d0 && s.mode === 'fight'; i++) { await page.keyboard.press('ShiftLeft'); await sleep(200); s = await snap(); }
+  ok(s.stats.dodges > d0 && s.stats.jumps === 0, 'Left Shift performs the step (dodge) and does not jump');
+
+  // ---- flask: interrupted by a hit before the sip => nothing consumed, nothing healed
+  s = await until((q) => q.stats.hitsTaken >= 1 || q.mode !== 'fight', 'a first wound', 60000);
+  ok(s.player.hp < 100 && s.mode === 'fight', 'the Reedcutter is wounded', `hp ${s.player.hp.toFixed(0)}`);
+  let broke = null;
+  for (let i = 0; i < 8 && !broke; i++) {
+    s = await until((q) => q.mode !== 'fight' || (q.nextHit && q.nextHit.inT <= 0.5 && q.nextHit.inT > 0.2 && q.player.state === 'idle' && q.dist < 3.2), 'a blow on its way', 60000);
+    if (s.mode !== 'fight') break;
+    const a = s;
+    await page.keyboard.press('KeyR');
+    s = await until((q) => q.hitSeq > a.hitSeq + 0 && !['drink'].includes(q.player.state) || q.mode !== 'fight', 'the blow to arrive', 5000);
+    if (s.stats.drinkBreaks > a.stats.drinkBreaks) broke = { a, s };
+    await until((q) => q.player.state === 'idle' || q.mode !== 'fight', 'recover', 6000);
+  }
+  ok(broke && broke.s.player.flask === broke.a.player.flask && broke.s.stats.drinks === broke.a.stats.drinks && broke.s.player.hp < broke.a.player.hp, 'a hit before the sip interrupts the drink: no charge spent, no heal', broke ? `hp ${broke.a.player.hp.toFixed(0)} -> ${broke.s.player.hp.toFixed(0)}, flask ${broke.s.player.flask}` : '');
+
+  // ---- flask: valid drinks until it is empty, one charge and one heal each, never above max; R held down does not repeat
+  let verified = 0;
+  for (let n = 1; n <= 4; n++) {
+    s = await snap();
+    if (s.player.flask === 0) break;
+    if (s.player.hp >= 100) s = await until((q) => q.stats.hitsTaken > s.stats.hitsTaken || q.mode !== 'fight', 'another wound', 60000);
+    const res = await quiet(g, 'drink ' + n, async (a) => {
+      if (a.player.flask === 0 || a.player.hp >= 100) return null;
+      await page.keyboard.down('KeyR'); // held for the whole drink and beyond
+      let q = await until((x) => x.player.state === 'drink' || x.stats.hitsTaken > a.stats.hitsTaken || x.mode !== 'fight', 'drink to start', 4000);
+      if (q.player.state !== 'drink') { await page.keyboard.up('KeyR'); return 'retry'; }
+      // sample at the sip itself (the first frame in which the drink is counted)
+      const b = await until((x) => x.stats.drinks > a.stats.drinks || x.player.state !== 'drink' || x.mode !== 'fight', 'the sip', 6000);
+      if (b.stats.drinks === a.stats.drinks || b.stats.hitsTaken > a.stats.hitsTaken) { await page.keyboard.up('KeyR'); return 'retry'; }
+      await sleep(1300); const c = await snap(); // R is still held: no second drink may start
+      await page.keyboard.up('KeyR');
+      return { a, b, c, done: true };
+    });
+    if (!res) continue;
+    const { a, b, c } = res, want = Math.min(100, a.player.hp + 38);
+    ok(b.stats.drinks === a.stats.drinks + 1 && b.player.flask === a.player.flask - 1 && c.stats.drinks === b.stats.drinks && c.player.flask === b.player.flask, `drink ${n}: exactly one charge spent while R is held down`, `flask ${a.player.flask} -> ${c.player.flask}`);
+    ok(Math.abs(b.player.hp - want) < 0.01 && b.player.hp <= 100, `drink ${n}: healed once, capped at max health`, `hp ${a.player.hp.toFixed(1)} -> ${b.player.hp.toFixed(1)}`);
+    verified++;
+  }
+  s = await snap();
+  ok(verified >= 2 && s.player.flask === 0 && s.stats.drinks === 3, 'three charges give three drinks in total', `${verified} checked in a quiet moment`);
+  ok(/×0/.test(await page.locator('#flaskN').innerText()) && await page.locator('#flask .gd.on').count() === 0, 'HUD shows the empty flask');
+  // ---- empty flask: refused
+  s = await snap();
+  if (s.player.hp >= 100) s = await until((q) => q.stats.hitsTaken > s.stats.hitsTaken || q.mode !== 'fight', 'a wound for the empty-flask check', 60000);
+  await until((q) => ['idle', 'guard'].includes(q.player.state) || q.mode !== 'fight', 'idle', 6000);
+  const e0 = await snap();
+  for (let i = 0; i < 20; i++) { await page.keyboard.press('KeyR'); await sleep(120); s = await snap(); if (s.stats.drinkFails > e0.stats.drinkFails || s.mode !== 'fight') break; }
+  ok(s.stats.drinkFails > e0.stats.drinkFails && s.player.flask === 0 && s.stats.drinks === 3 && s.player.hp <= e0.player.hp, 'R with an empty flask is refused: no heal', `hp ${s.player.hp.toFixed(0)}`);
   // then stand still and lose
   s = await until((q) => q.mode === 'defeat', 'defeat', 120000);
   ok(s.player.hp <= 0 && s.stats.hitsTaken >= 1, 'player health reaches zero', `${s.stats.hitsTaken} hits taken`);
@@ -255,16 +374,180 @@ async function lossRun() {
   await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
   s = await until((q) => q.mode === 'fight', 'retry after defeat', 20000);
   ok(s.player.hp === 100 && s.boss.hp === 100 && s.boss.phase === 1, 'mouse click on Retry restarts the fight');
+  ok(s.player.flask === 3 && s.stats.drinks === 0 && /×3/.test(await page.locator('#flaskN').innerText()), 'retry restores the flask charges');
   ok(!(await page.locator('#result').isVisible()), 'result screen hidden after retry');
   const a = s; await page.keyboard.down('KeyA'); await sleep(500); await page.keyboard.up('KeyA'); s = await snap();
   ok(Math.hypot(s.player.x - a.player.x, s.player.z - a.player.z) > 0.3, 'controls work after retry');
   await g.context.close();
 }
 
+// Controls pass: Left Shift / Space separation, jump, light vs. charged cut, interruption, pause /
+// blur clean-up, audio start / pause / mute / resume, real-time simulation rate.
+async function controlsRun() {
+  current = 'controls-run';
+  // hurt=0.08 (documented test option): this run waits for many quiet moments between the Warden's
+  // moves and takes blows on purpose; hits still stagger and interrupt, they just wound less
+  const g = await open('seed=11&q=low&hurt=0.08');
+  const { page, snap, until } = g;
+  let s = await snap();
+  ok(s.audio.state === 'none', 'no audio context before the first user gesture', s.audio.state);
+  const hint = await page.evaluate(() => document.getElementById('title').innerText + ' ' + document.getElementById('hint').textContent);
+  ok(/Shift/.test(hint) && /Jump/.test(hint) && /Reaping Cut/.test(hint) && /Dew Gourd/.test(hint), 'start screen and HUD hint list Left Shift, Jump, the charged cut and the flask');
+  await page.keyboard.press('Enter');
+  s = await until((q) => q.mode === 'fight', 'fight start', 30000);
+  // ---- audio starts on the first gesture and the ambience is running
+  s = await until((q) => q.audio.state === 'running' && q.audio.time > 0.5 && q.audio.drops > 0, 'audio running', 10000);
+  ok(true, 'audio unlocked by the first key press: context running, ambience drops being scheduled', `t=${s.audio.time.toFixed(1)}s, ${s.audio.drops} drops, wind ${s.audio.wind.toFixed(2)}`);
+
+  // ---- Left Shift steps, Space jumps, neither triggers the other (the Warden is still far away)
+  let a = await snap();
+  await page.keyboard.press('ShiftLeft');
+  s = await until((q) => q.stats.dodges > a.stats.dodges, 'step', 4000);
+  ok(s.stats.jumps === a.stats.jumps && s.player.y === 0, 'Left Shift steps and does not jump');
+  s = await until((q) => q.player.state === 'idle', 'idle after the step', 4000);
+  a = s;
+  await page.keyboard.down('Space'); // held down well past the landing
+  let peak = 0, sawAir = false;
+  s = await until((q) => { peak = Math.max(peak, q.player.y); sawAir = sawAir || q.player.state === 'air'; return q.stats.lands > a.stats.lands; }, 'jump and landing', 5000);
+  ok(s.stats.jumps === a.stats.jumps + 1 && s.stats.dodges === a.stats.dodges, 'Space jumps and does not step');
+  ok(sawAir && peak > 0.3, 'the Reedcutter leaves the ground', `highest sampled y ${peak.toFixed(2)} m`);
+  s = await until((q) => q.player.state === 'idle' && q.player.y === 0, 'landed', 4000);
+  await sleep(900); s = await snap();
+  await page.keyboard.up('Space');
+  ok(s.stats.jumps === a.stats.jumps + 1 && s.player.y === 0, 'holding Space does not jump again (edge-triggered)');
+  a = s; await page.keyboard.down('KeyA'); await sleep(350); await page.keyboard.up('KeyA'); s = await snap();
+  ok(Math.hypot(s.player.x - a.player.x, s.player.z - a.player.z) > 0.3, 'normal movement returns after landing');
+
+  // ---- real-time simulation: sim seconds per wall-clock second while fighting
+  a = await snap(); await sleep(3000); s = await snap();
+  const rate = (s.time - a.time) / ((s.now - a.now) / 1000);
+  ok(s.mode === 'fight' && rate > 0.93 && rate < 1.07, 'the simulation advances in real time at this frame rate', `${rate.toFixed(3)} sim s per wall s at ${s.fps.toFixed(1)} fps, ${((s.steps - a.steps) / (s.frames - a.frames)).toFixed(1)} steps per frame`);
+
+  // ---- short press: one light cut; three presses: the combo; no heavy from taps
+  await quiet(g, 'light cut', async (q0) => {
+    await page.keyboard.press('KeyJ');
+    const q = await until((x) => x.stats.swings > q0.stats.swings, 'J tap swing', 3000);
+    await until((x) => x.player.state === 'idle', 'cut to finish', 3000);
+    const q1 = await snap();
+    ok(q1.stats.swings === q0.stats.swings + 1 && q1.stats.heavies === q0.stats.heavies && q.player.state !== 'charge', 'a short J press is one light cut, no charge');
+  });
+  await quiet(g, 'combo', async (q0) => {
+    const combos = new Set();
+    for (let i = 0; i < 3; i++) {
+      await page.mouse.click(400, 240);
+      const t0 = Date.now(); while (Date.now() - t0 < 230) { const q = await snap(); if (q.player.state === 'attack') combos.add(q.player.combo); await sleep(15); }
+    }
+    await until((x) => x.player.state === 'idle', 'combo to finish', 3000);
+    const q1 = await snap();
+    if (q1.stats.hitsTaken !== q0.stats.hitsTaken) return 'retry';
+    ok(q1.stats.swings === q0.stats.swings + 3 && q1.stats.heavies === q0.stats.heavies && combos.size >= 2, 'three quick clicks give three light cuts (combo steps)', `combo steps seen ${[...combos].join(',')}`);
+  });
+
+  // ---- hold to charge, release for the heavy (mouse and J behave the same)
+  for (const [name, down, up] of [['left mouse', () => page.mouse.down(), () => page.mouse.up()], ['J key', () => page.keyboard.down('KeyJ'), () => page.keyboard.up('KeyJ')]]) {
+    await quiet(g, 'charge with ' + name, async (q0) => {
+      await down();
+      try {
+        let q = await until((x) => x.player.state === 'charge' || x.stats.hitsTaken > q0.stats.hitsTaken, 'charge state', 3000);
+        if (q.player.state !== 'charge') return 'retry';
+        q = await until((x) => x.player.chargeFull || x.player.state !== 'charge', 'full charge', 3000);
+        if (!q.player.chargeFull) return 'retry';
+        const cue = await page.locator('#charge.full').isVisible();
+        await up();
+        q = await until((x) => x.stats.heavies > q0.stats.heavies || x.stats.hitsTaken > q0.stats.hitsTaken, 'heavy cut', 3000);
+        if (q.stats.heavies === q0.stats.heavies) return 'retry';
+        ok(q.stats.heavies === q0.stats.heavies + 1 && q.stats.swings === q0.stats.swings + 1 && q.stats.chargeFulls === q0.stats.chargeFulls + 1, `holding ${name} charges; releasing after the cue gives exactly one heavy cut and no light cut`);
+        ok(cue, `the "fully charged" cue is shown (${name})`);
+      } finally { await up(); }
+    });
+  }
+  // ---- released before the threshold: an ordinary cut, no heavy
+  await quiet(g, 'early release', async (q0) => {
+    await page.mouse.down(); await sleep(330); await page.mouse.up();
+    await until((x) => x.player.state === 'idle' && x.stats.swings > q0.stats.swings, 'cut to finish', 4000);
+    const q1 = await snap();
+    if (q1.stats.hitsTaken !== q0.stats.hitsTaken) return 'retry';
+    ok(q1.stats.heavies === q0.stats.heavies && q1.stats.swings === q0.stats.swings + 1, 'released before the threshold: one ordinary cut, no heavy');
+  });
+
+  // ---- pause clears a held charge and a jump; audio pauses and resumes; mute silences the output
+  await quiet(g, 'pause', async (q0) => {
+    await page.keyboard.down('KeyJ');
+    let q = await until((x) => x.player.state === 'charge' || x.stats.hitsTaken > q0.stats.hitsTaken, 'charge before pause', 3000);
+    if (q.player.state !== 'charge') { await page.keyboard.up('KeyJ'); return 'retry'; }
+    await page.keyboard.press('KeyP');
+    q = await until((x) => x.paused, 'paused', 3000);
+    const vis = await page.locator('#pause').isVisible();
+    await sleep(500); const q2 = await snap();
+    await page.keyboard.up('KeyJ'); await page.keyboard.press('Space'); await page.keyboard.press('KeyR'); await page.keyboard.press('ShiftLeft');
+    await sleep(300); const q3 = await snap();
+    ok(vis && q2.player.state === 'idle' && q3.time === q2.time && q3.steps === q2.steps, 'P pauses: overlay shown, simulation frozen, the charge is dropped');
+    ok(q3.stats.jumps === q0.stats.jumps && q3.stats.dodges === q0.stats.dodges && q3.stats.heavies === q0.stats.heavies && q3.stats.drinkFails === q0.stats.drinkFails, 'keys pressed while paused do nothing');
+    ok(q3.audio.state === 'suspended' && Math.abs(q3.audio.time - q2.audio.time) < 0.05, 'audio is suspended while paused', `context ${q3.audio.state}`);
+    await page.keyboard.press('KeyP');
+    q = await until((x) => !x.paused && x.audio.state === 'running' && x.time > q3.time + 0.2, 'resume', 5000);
+    ok(q.stats.heavies === q0.stats.heavies && q.player.state !== 'charge' && q.player.state !== 'heavy', 'P resumes: no cut fires from the dropped charge, audio running again');
+  });
+  await page.keyboard.press('KeyM'); await sleep(400); s = await snap();
+  ok(s.audio.muted && s.audio.masterGain === 0 && s.audio.peak === 0 && await page.locator('#muteTag').isVisible(), 'M mutes: master gain 0, measured output peak 0');
+  await page.keyboard.press('KeyM');
+  s = await until((q) => !q.audio.muted && q.audio.masterGain > 0 && q.audio.peak > 0, 'unmute', 6000);
+  ok(true, 'M again restores the sound', `output peak ${s.audio.peak.toFixed(4)}`);
+  // jump, then a window blur mid-air: the jump is dropped, the fighter is on the ground, input still works
+  await quiet(g, 'blur', async (q0) => {
+    await page.keyboard.down('KeyJ');
+    let q = await until((x) => x.player.state === 'charge' || x.stats.hitsTaken > q0.stats.hitsTaken, 'charge before blur', 3000);
+    if (q.player.state !== 'charge') { await page.keyboard.up('KeyJ'); return 'retry'; }
+    await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+    await sleep(250); q = await snap(); await page.keyboard.up('KeyJ'); await sleep(400); const q2 = await snap();
+    if (q2.stats.hitsTaken !== q0.stats.hitsTaken) return 'retry';
+    ok(q.player.state !== 'charge' && q2.stats.heavies === q0.stats.heavies, 'window blur drops the charge; releasing afterwards fires nothing');
+  });
+
+  // ---- a hit interrupts the charge: no cut comes out
+  let broke = null;
+  for (let i = 0; i < 10 && !broke; i++) {
+    s = await until((q) => q.mode !== 'fight' || (q.nextHit && q.nextHit.type !== 'thrust' && q.nextHit.inT <= 0.6 && q.nextHit.inT > 0.3 && q.player.state === 'idle' && q.dist < 3.3), 'a blow on its way', 90000);
+    const q0 = s;
+    await page.mouse.down();
+    s = await until((q) => q.stats.hitsTaken > q0.stats.hitsTaken || q.stats.guards > q0.stats.guards || q.hitSeq > q0.hitSeq + 3 || q.stats.heavies > q0.stats.heavies, 'the blow', 6000);
+    await sleep(120); await page.mouse.up();
+    s = await until((q) => q.player.state === 'idle', 'recover', 6000);
+    await sleep(700); const q1 = await snap();
+    if (q1.stats.chargeBreaks > q0.stats.chargeBreaks && q1.stats.heavies === q0.stats.heavies) broke = { q0, q1 };
+  }
+  ok(!!broke, 'a hit during the charge interrupts it: no heavy cut, state back to normal', broke ? `charge breaks ${broke.q1.stats.chargeBreaks}, heavies ${broke.q1.stats.heavies}` : '');
+
+  // ---- a charged cut that reaches the Warden registers (hit or beaten-down guard)
+  let landed = null;
+  for (let i = 0; i < 16 && !landed; i++) {
+    // stand and guard through one of the Warden's moves; the pause it takes afterwards (0.9 s or
+    // more, then a wind-up) is longer than the 0.83 s a charged cut needs
+    await page.mouse.down({ button: 'right' });
+    await until((q) => q.mode !== 'fight' || q.boss.state === 'attack', 'the Warden to attack', 60000);
+    await until((q) => q.mode !== 'fight' || q.boss.state !== 'attack', 'its move to end', 20000);
+    await page.mouse.up({ button: 'right' });
+    s = await snap();
+    if (s.boss.state !== 'approach' || !['idle', 'guard'].includes(s.player.state) || s.dist > 3.8) { await until((q) => ['idle', 'guard'].includes(q.player.state) || q.mode !== 'fight', 'recover', 6000); continue; }
+    const q0 = s;
+    await page.keyboard.down('KeyW'); await page.keyboard.down('KeyJ');
+    await until((q) => q.stats.swings > q0.stats.swings || q.stats.hitsTaken > q0.stats.hitsTaken, 'the press to register', 2000).catch(() => {});
+    s = await until((q) => q.player.chargeFull || q.stats.hitsTaken > q0.stats.hitsTaken || (q.player.state !== 'charge' && q.player.state !== 'attack'), 'charge', 3000);
+    await page.keyboard.up('KeyJ'); await page.keyboard.up('KeyW');
+    await sleep(600); s = await until((q) => ['idle', 'guard', 'stagger'].includes(q.player.state), 'recover', 5000);
+    if (s.stats.heavyHits > q0.stats.heavyHits) landed = { q0, s };
+  }
+  ok(!!landed && (landed.s.boss.hp < landed.q0.boss.hp), 'a charged cut that reaches the Warden deals damage', landed ? `boss hp ${landed.q0.boss.hp.toFixed(0)} -> ${landed.s.boss.hp.toFixed(0)}, balance ${landed.q0.boss.stance.toFixed(0)} -> ${landed.s.boss.stance.toFixed(0)}` : '');
+  await renderStats(page, '07-controls');
+  await g.context.close();
+}
+
+const only = (process.argv.find((a) => a.startsWith('--only=')) || '').slice(7);
 let failed = null;
 try {
-  console.log('win run'); await winRun();
-  console.log('loss run'); await lossRun();
+  if (!only || only === 'win') { console.log('win run'); await winRun(); }
+  if (!only || only === 'loss') { console.log('loss run'); await lossRun(); }
+  if (!only || only === 'controls') { console.log('controls run'); await controlsRun(); }
   current = 'global';
   ok(external.length === 0, 'no network requests attempted', external.slice(0, 3).join(' '));
   ok(pageErrors.length === 0, 'no uncaught page errors', pageErrors.slice(0, 3).join(' | '));

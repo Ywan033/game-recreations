@@ -3,7 +3,7 @@
 // step), spring recoil, and simple cloth panels. Presentation only — the simulation is untouched.
 import * as THREE from 'three/webgpu';
 import { normalView, normalWorld, positionViewDirection, vec3, float, smoothstep } from 'three/tsl';
-import { MOVES, C } from './sim.js';
+import { MOVES, C, CHARGE, FLASK } from './sim.js';
 import { MOON } from './world.js';
 
 // Body landmarks in metres at scale 1 (about 7.5 heads tall, 1.76 m).
@@ -54,6 +54,13 @@ export const POSES = {
   hook: mk({ ...LUNGE, hip: [0, -0.18, 0.1], hipR: [0.06, 0.3, 0], chest: [0.3, 0.6, 0], sp: [0.12, -0.2, 0.42], sd: [0.8, -0.2, 0.55] }),
   wheel: mk({ hip: [0, -0.3, 0], hipR: [0.1, -0.2, 0], chest: [0.3, -0.5, 0], sp: [-0.3, -0.12, 0.22], sd: [-0.9, -0.1, 0.4], two: 0, lh: [0.32, 0, 0.1], fL: [0.16, -0.25, 0], fR: [-0.14, 0.2, 0] }),
   riseCut: mk({ hip: [0, 0.02, 0.05], hipR: [-0.05, 0.3, 0], chest: [-0.2, 0.3, 0], head: [-0.2, 0, 0], sp: [-0.1, 0.5, 0.2], sd: [-0.2, 0.9, 0.35], fL: [0.14, -0.3, 0], fR: [-0.1, 0.3, 0] }),
+  // controls pass: Reaping Cut (charge, release, follow-through), jump (crouch, airborne), Dew Gourd
+  charge: mk({ hip: [0, -0.16, -0.06], hipR: [0, -0.3, 0], chest: [-0.05, -0.7, 0], sp: [-0.22, 0.36, 0], sd: [-0.35, 0.55, -0.75], fL: [0.16, -0.3, 0], fR: [-0.13, 0.22, 0] }),
+  reap: mk({ ...LUNGE, hip: [0, -0.22, 0.14], hipR: [0.1, 0.3, 0], chest: [0.42, 0.55, 0], sp: [0.05, -0.24, 0.42], sd: [0.35, -0.5, 0.8] }),
+  reapFol: mk({ ...LUNGE, hip: [0, -0.26, 0.12], hipR: [0.1, 0.35, 0], chest: [0.5, 0.75, 0], sp: [0.18, -0.3, 0.26], sd: [0.8, -0.55, 0.3] }),
+  crouch: mk({ hip: [0, -0.26, 0], hipR: [0.2, 0, 0], chest: [0.3, 0, 0], sp: [-0.22, -0.2, 0.14], sd: [-0.2, -0.3, -0.9], two: 0, lh: [0.24, -0.18, 0.14], fL: [0.13, -0.1, 0], fR: [-0.12, 0.1, 0] }),
+  air: mk({ hip: [0, 0.02, 0], hipR: [-0.08, 0, 0], chest: [-0.1, 0, 0], sp: [-0.26, -0.12, 0.1], sd: [-0.25, -0.2, -0.95], two: 0, lh: [0.3, 0.05, 0.12], fL: [0.12, -0.16, 0.2], fR: [-0.11, 0.12, 0.34] }),
+  drink: mk({ hip: [0, -0.05, -0.02], hipR: [-0.04, 0.15, 0], chest: [-0.14, 0.1, 0], head: [-0.38, 0.1, 0], sp: [-0.26, -0.22, 0.12], sd: [-0.15, -0.9, 0.35], two: 0, lh: [0.07, 0.36, 0.17] }),
   fallen: mk({ hip: [0, -0.78, 0.25], hipR: [1.45, 0, 0], chest: [0.05, 0, 0.1], head: [-0.2, 0.6, 0], sp: [-0.4, 0.15, 0.1], sd: [-0.6, 0, 0.8], two: 0, lh: [0.38, 0.2, 0.1], fL: [0.16, -0.75, 0.06], fR: [-0.14, -0.7, 0.06], free: 1, fp: 1.3 }),
   fallenBack: mk({ hip: [0, -0.8, -0.2], hipR: [-1.45, 0, 0], chest: [-0.05, 0, 0.1], head: [0.2, 0.4, 0], sp: [-0.42, 0.05, -0.1], sd: [-0.8, 0, 0.6], two: 0, lh: [0.4, 0, -0.08], fL: [0.16, 0.8, 0.06], fR: [-0.14, 0.75, 0.06], free: 1, fp: -1.3 }),
 };
@@ -95,7 +102,10 @@ function matFactory() {
   return (color, o = {}) => {
     const { tex, rimK = 1.25, ...rest } = o;
     const m = new THREE.MeshStandardNodeMaterial({ color, roughness: 0.92, metalness: 0, map: tex ? TEX[tex] : null, ...rest });
-    if (rimK > 0) m.emissiveNode = rim(rimK);
+    // fighters sit a little above the field in value: a stronger moon rim plus a faint cool lift of
+    // their own colour (a per-character exposure nudge; the field's lighting is unchanged)
+    const cc = new THREE.Color(color), lift = vec3(cc.r * 0.6 + 0.02, cc.g * 0.62 + 0.025, cc.b * 0.68 + 0.035).mul(0.085);
+    m.emissiveNode = rimK > 0 ? rim(rimK * 1.5).add(lift) : lift;
     return m;
   };
 }
@@ -114,6 +124,37 @@ function bladeGeo(L, w, th, curve) {
   g = g.toNonIndexed(); g.computeVertexNormals();
   return g;
 }
+// Lofted skin: elliptical cross-sections (rings) joined into one tube, every ring weighted to up to
+// two bones. rings: [{ c: [x, y, z], rx, rz, w: [[bone, weight], ...] }] in the bind pose.
+function loft(rings, seg = 12) {
+  const pos = [], uvs = [], si = [], sw = [], idx = [], n = rings.length, down = rings[0].c[1] > rings[n - 1].c[1];
+  rings.forEach((r, i) => {
+    const w = r.w.concat([[0, 0], [0, 0], [0, 0]]).slice(0, 4), tot = w.reduce((s, x) => s + x[1], 0);
+    for (let j = 0; j <= seg; j++) {
+      const a = (j / seg) * Math.PI * 2 + Math.PI; // seam at the back
+      pos.push(r.c[0] + Math.sin(a) * r.rx, r.c[1], r.c[2] + Math.cos(a) * r.rz);
+      uvs.push((j / seg) * 2, r.c[1] * 2.2);
+      for (const x of w) { si.push(x[0]); sw.push(x[1] / tot); }
+    }
+  });
+  for (let i = 0; i < n - 1; i++) for (let j = 0; j < seg; j++) {
+    const a = i * (seg + 1) + j, b = a + seg + 1;
+    if (down) idx.push(a, b, a + 1, a + 1, b, b + 1); else idx.push(a, a + 1, b, a + 1, b + 1, b);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  g.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(si, 4)); g.setAttribute('skinWeight', new THREE.Float32BufferAttribute(sw, 4));
+  g.setIndex(idx); g.computeVertexNormals();
+  // weld the shading across the seam (first and last vertex of each ring coincide)
+  const nr = g.attributes.normal;
+  for (let i = 0; i < n; i++) {
+    const a = i * (seg + 1), b = a + seg, x = nr.getX(a) + nr.getX(b), y = nr.getY(a) + nr.getY(b), z = nr.getZ(a) + nr.getZ(b), l = Math.hypot(x, y, z) || 1;
+    nr.setXYZ(a, x / l, y / l, z / l); nr.setXYZ(b, x / l, y / l, z / l);
+  }
+  return g;
+}
+// bone order of the body skeleton
+const B = { pelvis: 0, spine: 1, chest: 2, head: 3, upL: 4, foreL: 5, upR: 6, foreR: 7, thighL: 8, shinL: 9, thighR: 10, shinR: 11 };
 function panelGeo(w, h, flare, bow) {
   const g = new THREE.PlaneGeometry(w, h, 2, 4); g.translate(0, -h / 2, 0);
   const p = g.attributes.position;
@@ -162,14 +203,13 @@ export class Figure {
     this.root = new THREE.Group();
     const pv = this.pivot = new THREE.Group(); this.root.add(pv); pv.scale.setScalar(S.scale);
     const add = (parent, geo, mat, x = 0, y = 0, z = 0, sx = 1, sy = 1, sz = 1) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.scale.set(sx, sy, sz); m.castShadow = true; parent.add(m); return m; };
-    const grp = (parent, x = 0, y = 0, z = 0) => { const g = new THREE.Group(); g.position.set(x, y, z); g.rotation.order = 'YXZ'; parent.add(g); return g; };
+    // every joint is a Bone, so the rig that the IK drives is also the skeleton the skin is bound to
+    const grp = (parent, x = 0, y = 0, z = 0) => { const g = new THREE.Bone(); g.position.set(x, y, z); g.rotation.order = 'YXZ'; parent.add(g); return g; };
     const sph = (r) => new THREE.SphereGeometry(r, 12, 9);
 
     // ---- trunk
     const pelvis = this.pelvis = grp(pv, 0, D.hipY, 0), spine = this.spine = grp(pelvis, 0, D.spine, 0), chest = this.chest = grp(spine, 0, D.chest, 0), head = this.head = grp(chest, 0, D.neck, 0);
-    add(pelvis, lathe([[0.02, -0.12], [0.1, -0.09], [0.15, -0.02], [0.152, 0.06], [0.135, 0.14]]), trouser, 0, 0, 0, 1, 1, 0.74);
-    add(spine, lathe([[0.128, -0.06], [0.126, 0.04], [0.14, 0.14], [0.15, 0.2]]), robe, 0, 0, 0, 1, 1, 0.72);
-    add(chest, lathe([[0.14, -0.04], [0.158, 0.05], [0.172, 0.15], [0.166, 0.215], [0.125, 0.265], [0.062, 0.3], [0.03, 0.31]], 14), robe, 0, 0, 0, 1, 1, 0.68);
+    // (the trunk, sleeves and legs are one skinned surface each; see "skin" below)
     // under-robe showing at the neck, and the overlapping collar bands of the outer garment
     add(chest, lathe([[0.075, 0.2], [0.07, 0.29], [0.058, 0.325]], 10), under, 0, 0, 0.012, 1, 1, 0.9);
     const colGeo = new THREE.BoxGeometry(0.036, 0.3, 0.02);
@@ -229,27 +269,68 @@ export class Figure {
 
     // ---- limbs (flat hierarchy under the pivot; posed by IK every frame)
     const limb = () => grp(pv);
-    const armGeo = { up: lathe([[0.074, -D.upArm - 0.02], [0.07, -0.2], [0.064, -0.06], [0.05, 0.01]]), cap: sph(0.07), fore: lathe([[0.034, -D.foreArm], [0.04, -0.14], [0.047, -0.03], [0.04, 0.01]]), bracer: lathe([[0.041, -D.foreArm + 0.015], [0.05, -0.15], [0.053, -0.06]], 10) };
+    const armGeo = { bracer: lathe([[0.041, -D.foreArm + 0.015], [0.05, -0.15], [0.053, -0.06]], 10), fist: new THREE.TorusGeometry(0.027, 0.019, 6, 12) };
     const mkArm = () => {
       const up = limb(), fore = limb(), hand = limb();
-      add(up, armGeo.up, robe, 0, 0, 0, 1, 1, 1); add(up, armGeo.cap, robe, 0, -0.012, 0, 0.9, 0.85, 0.9);
-      add(fore, armGeo.fore, under); add(fore, armGeo.bracer, leather); add(fore, sph(0.05), robe, 0, 0, 0, 1, 1, 1);
-      add(hand, new THREE.BoxGeometry(0.07, 0.07, 0.032), skin, 0, -0.035, 0);
-      add(hand, sph(0.043), skin, 0, -D.hand, 0.004, 1.05, 0.9, 1.15);
+      add(fore, armGeo.bracer, leather);
+      // closed hand: the back of the hand, and the fingers curled into a ring around the hilt axis
+      add(hand, new THREE.BoxGeometry(0.066, 0.06, 0.034), skin, 0, -0.03, -0.004);
+      add(hand, armGeo.fist, skin, 0, -D.hand, 0.002, 1, 1, 1.9);
+      add(hand, sph(0.02), skin, 0.03, -D.hand + 0.012, 0.03); // thumb
       return { up, fore, hand, sh: new THREE.Vector3(), el: new THREE.Vector3(), wr: new THREE.Vector3(), grip: new THREE.Vector3() };
     };
     this.armL = mkArm(); this.armR = mkArm();
-    const legGeo = { thigh: lathe([[0.088, -D.thigh], [0.1, -0.2], [0.104, -0.04], [0.08, 0.03]]), knee: sph(0.088), shinT: lathe([[0.07, -0.25], [0.086, -0.12], [0.088, 0]]), shinW: lathe([[0.04, -D.shin], [0.052, -0.33], [0.056, -0.22]], 10) };
+    if (!boss) { // the Dew Gourd: shown in the left hand only while drinking
+      const gd = this.gourd = grp(this.armL.hand, 0, -D.hand - 0.02, 0.05); gd.visible = false;
+      const gm = M(0x9a7a3c, { roughness: 0.55 });
+      add(gd, sph(0.05), gm, 0, -0.03, 0, 1, 1.05, 1); add(gd, sph(0.032), gm, 0, 0.035, 0); add(gd, new THREE.CylinderGeometry(0.01, 0.012, 0.03, 6), dark, 0, 0.075, 0);
+    }
+    const legGeo = { shinW: lathe([[0.04, -D.shin], [0.052, -0.33], [0.056, -0.22]], 10) };
     const mkLeg = () => {
       const thigh = limb(), shin = limb(), foot = limb();
-      add(thigh, legGeo.thigh, trouser);
-      add(shin, legGeo.knee, trouser, 0, 0, 0, 1, 1, 1); add(shin, legGeo.shinT, trouser); add(shin, legGeo.shinW, wrap);
+      add(shin, legGeo.shinW, wrap);
       add(foot, sph(0.045), shoe, 0, -0.005, 0, 1, 1, 1.1);
       add(foot, new THREE.CapsuleGeometry(0.043, 0.14, 3, 8), shoe, 0, -0.036, 0.062, 1, 1, 0.78).rotation.x = Math.PI / 2;
       add(foot, new THREE.BoxGeometry(0.092, 0.016, 0.25), boss ? dark : straw, 0, -0.068, 0.055);
       return { thigh, shin, foot, hj: new THREE.Vector3(), kn: new THREE.Vector3(), an: new THREE.Vector3(), tgt: new THREE.Vector3(), x: 0, z: 0, yaw: 0, t: 1, T: 0.2, sx: 0, sz: 0, syaw: 0, h: 0, lift: 0 };
     };
     this.legL = mkLeg(); this.legR = mkLeg();
+
+    // ---- skin: lofted cross-sections bound to the skeleton. Bind pose = standing, arms hanging
+    // straight down (the limb bones are aimed with their -y axis along the limb, as the IK does).
+    const shY = D.hipY + D.spine + D.chest + D.shY, hjY = D.hipY - 0.03;
+    const bones = [pelvis, spine, chest, head, this.armL.up, this.armL.fore, this.armR.up, this.armR.fore, this.legL.thigh, this.legL.shin, this.legR.thigh, this.legR.shin];
+    for (const [arm, sx] of [[this.armL, 1], [this.armR, -1]]) { arm.up.position.set(sx * D.shW, shY, 0); arm.fore.position.set(sx * D.shW, shY - D.upArm, 0); }
+    for (const [leg, sx] of [[this.legL, 1], [this.legR, -1]]) { leg.thigh.position.set(sx * D.hipW, hjY, 0); leg.shin.position.set(sx * D.hipW, hjY - D.thigh, 0); }
+    this.root.updateMatrixWorld(true);
+    const skeleton = new THREE.Skeleton(bones);
+    const skinMesh = (rings, mat, seg) => { const m = new THREE.SkinnedMesh(loft(rings, seg), mat); m.castShadow = true; m.frustumCulled = false; pv.add(m); m.updateMatrixWorld(true); m.bind(skeleton); return m; };
+    const ring = (x, y, rx, rz, ...w) => ({ c: [x, y, 0], rx, rz, w });
+    const Y = D.hipY, P = B.pelvis, Sp = B.spine, Ch = B.chest;
+    // trunk: crotch -> hips -> waist -> ribs -> shoulders -> neck root
+    skinMesh([
+      ring(0, Y - 0.125, 0.02, 0.02, [P, 1]), ring(0, Y - 0.09, 0.1, 0.076, [P, 1]), ring(0, Y - 0.02, 0.15, 0.111, [P, 1]), ring(0, Y + 0.06, 0.152, 0.112, [P, 1]),
+      ring(0, Y + 0.1, 0.136, 0.1, [P, 0.55], [Sp, 0.45]), ring(0, Y + 0.16, 0.127, 0.092, [Sp, 1]), ring(0, Y + 0.225, 0.134, 0.097, [Sp, 0.6], [Ch, 0.4]),
+      ring(0, Y + 0.29, 0.146, 0.102, [Ch, 0.8], [Sp, 0.2]), ring(0, Y + 0.36, 0.162, 0.111, [Ch, 1]), ring(0, Y + 0.44, 0.172, 0.117, [Ch, 1]), ring(0, Y + 0.505, 0.166, 0.113, [Ch, 1]),
+      ring(0, Y + 0.555, 0.125, 0.087, [Ch, 1]), ring(0, Y + 0.59, 0.064, 0.052, [Ch, 0.75], [B.head, 0.25]), ring(0, Y + 0.602, 0.03, 0.03, [Ch, 0.6], [B.head, 0.4]),
+    ], robe, 16);
+    for (const [sx, up, fo, th, sh] of [[1, B.upL, B.foreL, B.thighL, B.shinL], [-1, B.upR, B.foreR, B.thighR, B.shinR]]) {
+      const ax = sx * D.shW, lx = sx * D.hipW, eY = shY - D.upArm, kY = hjY - D.thigh;
+      // sleeve: shoulder cap blended into the chest, creased at the elbow
+      skinMesh([
+        ring(ax - sx * 0.05, shY + 0.03, 0.03, 0.04, [Ch, 0.75], [up, 0.25]), ring(ax - sx * 0.012, shY + 0.022, 0.058, 0.062, [Ch, 0.45], [up, 0.55]), ring(ax, shY - 0.035, 0.07, 0.07, [up, 0.85], [Ch, 0.15]),
+        ring(ax, shY - 0.12, 0.067, 0.067, [up, 1]), ring(ax, shY - 0.2, 0.07, 0.07, [up, 1]), ring(ax, eY + 0.03, 0.068, 0.068, [up, 0.75], [fo, 0.25]),
+        ring(ax, eY, 0.062, 0.062, [up, 0.5], [fo, 0.5]), ring(ax, eY - 0.035, 0.054, 0.054, [fo, 0.85], [up, 0.15]), ring(ax, eY - 0.06, 0.03, 0.03, [fo, 1]),
+      ], robe, 10);
+      // forearm in the under-robe sleeve, down to the wrist
+      skinMesh([ring(ax, eY - 0.01, 0.04, 0.04, [fo, 0.7], [up, 0.3]), ring(ax, eY - 0.04, 0.047, 0.047, [fo, 1]), ring(ax, eY - 0.14, 0.04, 0.04, [fo, 1]), ring(ax, eY - D.foreArm, 0.033, 0.033, [fo, 1])], under, 8);
+      // leg: hip blended into the pelvis, knee, calf, ankle
+      skinMesh([
+        ring(lx * 0.8, hjY + 0.05, 0.07, 0.085, [P, 0.7], [th, 0.3]), ring(lx, hjY - 0.03, 0.102, 0.104, [th, 0.75], [P, 0.25]), ring(lx, hjY - 0.12, 0.103, 0.103, [th, 1]), ring(lx, hjY - 0.25, 0.097, 0.097, [th, 1]),
+        ring(lx, kY + 0.06, 0.09, 0.09, [th, 0.8], [sh, 0.2]), ring(lx, kY, 0.087, 0.09, [th, 0.5], [sh, 0.5]), ring(lx, kY - 0.06, 0.088, 0.088, [sh, 0.85], [th, 0.15]),
+        ring(lx, kY - 0.13, 0.086, 0.086, [sh, 1]), ring(lx, kY - 0.25, 0.07, 0.07, [sh, 1]), ring(lx, kY - D.shin + 0.02, 0.046, 0.046, [sh, 1]),
+      ], trouser, 10);
+    }
 
     // ---- sword: blade along +z, guard at the origin, edge toward -y
     const sw = this.sword = grp(pv);
@@ -340,7 +421,7 @@ export class Figure {
         const u = sm(f.t), tx = hx + this.vx * lead, tz = hz + this.vz * lead;
         f.x = f.sx + (tx - f.sx) * u; f.z = f.sz + (tz - f.sz) * u; f.yaw = f.syaw + angDiff(hyaw, f.syaw) * u;
         f.lift = Math.sin(Math.PI * f.t) * f.h;
-        if (f.t >= 1) { f.lift = 0; this.dip.v -= 0.12 + Math.min(0.5, speed * 0.07); }
+        if (f.t >= 1) { f.lift = 0; this.dip.v -= 0.12 + Math.min(0.5, speed * 0.07); if (this.onStep && speed > 0.8) this.onStep(speed); }
       } else if (dt > 0) {
         const err = Math.hypot(hx - f.x, hz - f.z);
         if ((err > Dst || Math.abs(angDiff(hyaw, f.yaw)) > 0.6) && (o.t >= 1 || err > Dst * 2.6 + 0.2)) {
@@ -454,6 +535,8 @@ export class Figure {
       p.swing.rotation.x = -Math.min(phi, 1.7);
     }
 
+    if (this.gourd) this.gourd.visible = !!extra.flask;
+
     // ---- blade trail
     this.root.updateWorldMatrix(true, true);
     this.tip.getWorldPosition(this._a); this.base.getWorldPosition(this._b);
@@ -475,9 +558,14 @@ export function playerPose(s) {
   const parry = s.time - p.lastDeflectT < 0.2;
   switch (p.state) {
     case 'guard': return parry ? [P.deflect, 48, ex] : [P.guard, 20, ex];
+    case 'charge': return [P.charge, 9, ex];
+    case 'heavy': if (p.t < CHARGE.HIT + 0.08) { ex.trail = true; return [P.reap, 36, ex]; } return [P.reapFol, 11, ex];
+    case 'takeoff': case 'land': return [P.crouch, 30, ex];
+    case 'air': return [P.air, 16, ex];
+    case 'drink': ex.flask = p.t < FLASK.SIP + 0.25; return [p.t < FLASK.SIP + 0.12 ? P.drink : P.idle, 12, ex];
     case 'attack': {
       const side = 'RLO'[p.combo];
-      if (p.t < 0.08) return [P['wind' + side], 36, ex];
+      if (p.t < 0.11) return [P['wind' + side], 36, ex];
       ex.trail = p.t < 0.3;
       return p.t < 0.27 ? [P['hit' + side], 34, ex] : [P['fol' + side], 13, ex];
     }

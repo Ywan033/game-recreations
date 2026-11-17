@@ -24,11 +24,20 @@
     <div class="bar hp"><i id="plHp"></i></div>
     <div class="bar st"><i id="plSt"></i><u></u></div>
     <div class="lab"><span>生命 Health</span><span>重心 Balance</span></div>
+    <div id="charge" class="bar"><i id="chargeFill"></i></div>
+    <div id="flask"><kbd>R</kbd> 甘露葫芦 <em>Dew Gourd</em> <b class="gd on"></b><b class="gd on"></b><b class="gd on"></b> <span id="flaskN">×3</span></div>
   </div>
   <div id="lockTag">◎ 凝视 Fix Gaze</div>
+  <div id="muteTag" class="hidden">静音 Muted (M)</div>
   <div id="prompt"><kbd>F</kbd> 月轮 · Moonwheel</div>
   <div id="callout"></div>
-  <div id="hint">WASD 移动 · 鼠标左键/J 斩 · 右键/K 架刀 · 空格 踏步 · F 月轮 · Q 凝视</div>
+  <div id="hint">WASD 移动 · 左键/J 斩（按住蓄力 刈斩）· 右键/K 架刀 · 左Shift 踏步 · 空格 跳 · R 饮药 · F 月轮 · Q 凝视 · P 暂停</div>
+</div>
+
+<div id="pause" class="screen hidden">
+  <h1>暂停</h1>
+  <h2>Paused</h2>
+  <button id="resume">继续 · Resume <small>(P / Esc)</small></button>
 </div>
 
 <div id="title" class="screen">
@@ -38,17 +47,20 @@
   <button id="start">启程 · Begin <small>(Enter)</small></button>
   <table>
     <tr><td><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></td><td>移动 Move</td></tr>
-    <tr><td><kbd>左键 LMB</kbd> / <kbd>J</kbd></td><td>斩 Cut</td></tr>
+    <tr><td><kbd>左键 LMB</kbd> / <kbd>J</kbd></td><td>斩 Cut (点按 tap) · 刈斩 Reaping Cut (蓄力 hold)</td></tr>
     <tr><td><kbd>右键 RMB</kbd> / <kbd>K</kbd></td><td>架刀 Guard (按住 hold)</td></tr>
-    <tr><td><kbd>空格 Space</kbd></td><td>踏步 Step (闪避 dodge)</td></tr>
+    <tr><td><kbd>左 Shift</kbd></td><td>踏步 Step (闪避 dodge) · <kbd>W</kbd>+<kbd>左 Shift</kbd> 踏锁 Bind-Step</td></tr>
+    <tr><td><kbd>空格 Space</kbd></td><td>跳 Jump</td></tr>
+    <tr><td><kbd>R</kbd></td><td>甘露葫芦 Dew Gourd (回复 heal, ×3)</td></tr>
     <tr><td><kbd>F</kbd></td><td>月轮 Moonwheel (终结 finisher)</td></tr>
     <tr><td><kbd>Q</kbd> / <kbd>中键 MMB</kbd></td><td>凝视 Fix Gaze (锁定 lock-on)</td></tr>
     <tr><td><kbd>鼠标 Mouse</kbd> / <kbd>←</kbd><kbd>→</kbd></td><td>环视 Look (自由视角 free camera)</td></tr>
-    <tr><td><kbd>M</kbd> · <kbd>R</kbd></td><td>静音 Mute · 重来 Retry</td></tr>
+    <tr><td><kbd>P</kbd> / <kbd>Esc</kbd> · <kbd>M</kbd> · <kbd>Enter</kbd></td><td>暂停 Pause · 静音 Mute · 开始/再战 Begin / Retry</td></tr>
   </table>
   <ul>
     <li><b>拨锋 Glance</b> — 在刀锋及身前一瞬按下架刀，拨开来刀并动摇对手重心；连段可连续拨锋。<br>Press Guard just before a blow lands to turn it aside and shake the foe's Balance. Chain it through a string.</li>
     <li><b>踏锁 Bind-Step</b> — 紫焰与笛啸预示无法架挡的突刺：迎着它向前踏步，压住刀身。<br>A violet flare and a falling pipe-wail warn of a thrust no guard can stop: Step <i>forward</i> into it to pin the blade.</li>
+    <li><b>刈斩 Reaping Cut</b> — 按住斩键蓄力，刀锋闪出青光后松开；挨打会打断蓄力。<br>Hold Cut to wind up, release once the blade flares pale blue. Being hit breaks the charge.</li>
     <li><b>失衡 Unbalanced</b> — 对手重心满溢时靠近按 <kbd>F</kbd> 施展月轮。一直架刀会耗尽你自己的重心。<br>When the foe's Balance fills, close in and press <kbd>F</kbd>. Guarding alone drains your own Balance.</li>
   </ul>
   <div id="backend"></div>
@@ -58,7 +70,7 @@
   <h1 id="resTitle"></h1>
   <h2 id="resSub"></h2>
   <p id="resStats" class="lead"></p>
-  <button id="retry">再战 · Retry <small>(R / Enter)</small></button>
+  <button id="retry">再战 · Retry <small>(Enter)</small></button>
 </div>
 <script type="module" src="/src/main.js"></script>
 </body>

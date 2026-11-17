@@ -47,5 +47,25 @@ module.exports = async function onlineCheck(page) {
     if (s.stats.swings > sw) break;
   }
   if (!(s.stats.swings > sw)) throw new Error('online-check: mouse attack did not register');
+
+  // controls pass: Left Shift steps, Space jumps, R is the flask key (real key presses, repeated
+  // until the fighter is free to act; each within a few seconds)
+  const pressUntil = async (code, done, label) => {
+    const base = await snap(), t1 = Date.now();
+    for (;;) {
+      await page.keyboard.press(code);
+      await sleep(180);
+      const q = await snap();
+      if (done(q, base)) return q;
+      if (q.mode !== 'fight') throw new Error('online-check: fight ended (' + q.mode + ') before ' + label);
+      if (Date.now() - t1 > 8000) throw new Error('online-check: ' + label + ' — ' + JSON.stringify(q.stats).slice(0, 300));
+    }
+  };
+  s = await pressUntil('ShiftLeft', (q, b) => q.stats.dodges > b.stats.dodges, 'Left Shift did not step');
+  s = await pressUntil('Space', (q, b) => q.stats.jumps > b.stats.jumps, 'Space did not jump');
+  // R: a drink starts when wounded, or the "cannot" feedback is counted at full health / empty flask
+  const flask = (q) => q.stats.drinks + q.stats.drinkFails + q.stats.drinkBreaks + (q.player.state === 'drink' ? 1 : 0);
+  s = await pressUntil('KeyR', (q, b) => flask(q) > flask(b), 'R was not handled as the flask key');
+  if (typeof s.player.flask !== 'number' || s.player.flask < 0 || s.player.flask > 3) throw new Error('online-check: flask charges not reported');
   if (errors.length) throw new Error('online-check: uncaught page error: ' + errors[0]);
 };

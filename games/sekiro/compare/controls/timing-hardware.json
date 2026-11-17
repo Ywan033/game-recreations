@@ -1,0 +1,53 @@
+{
+  "renderer": "Chrome, hardware GPU",
+  "runs": [
+    {
+      "mode": "after (as shipped)",
+      "backend": "WebGPU",
+      "jump": {
+        "expected": 0.69,
+        "wall": 0.66,
+        "valid": true
+      },
+      "charge": {
+        "expected": 0.65,
+        "wall": 0.652,
+        "valid": true
+      },
+      "bossMove": {
+        "move": "quick2",
+        "expected": 1.7,
+        "wall": 1.707,
+        "sim": 1.717
+      },
+      "simRate": 0.999,
+      "fps": 171.1,
+      "tier": 0,
+      "stepsPerFrame": 0.35
+    },
+    {
+      "mode": "before (50 ms clamp, #legacyclamp=1)",
+      "backend": "WebGPU",
+      "jump": {
+        "expected": 0.69,
+        "wall": 0.666,
+        "valid": true
+      },
+      "charge": {
+        "expected": 0.65,
+        "wall": 0.653,
+        "valid": true
+      },
+      "bossMove": {
+        "move": "quick2",
+        "expected": 1.7,
+        "wall": 1.713,
+        "sim": 1.717
+      },
+      "simRate": 0.999,
+      "fps": 172.9,
+      "tier": 0,
+      "stepsPerFrame": 0.35
+    }
+  ]
+}

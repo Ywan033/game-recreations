@@ -1,16 +1,18 @@
 // Reedmoon Duel — renderer, input, camera, HUD and glue around the fixed-step simulation.
 import * as THREE from 'three/webgpu';
 import './style.css';
-import { createSim, C, MOVES } from './sim.js';
+import { createSim, C, MOVES, CHARGE } from './sim.js';
 import { buildWorld } from './world.js';
 import { Figure, playerPose, bossPose, POSE_NAMES } from './figure.js';
 import { Fx } from './fx.js';
 import { Sound } from './audio.js';
 
 // Documented test/debug options in the URL hash: #seed=7&gain=2&hurt=3&q=low&mute=1&gl=1&auto=0
+// plus two evidence-only options: #rec=1 (recording hook, see below) and #legacyclamp=1 (old frame clamp, for timing A/B).
 const opt = new URLSearchParams(location.hash.slice(1));
 const num = (k) => (opt.has(k) && isFinite(+opt.get(k)) ? +opt.get(k) : undefined);
 const low = opt.get('q') === 'low';
+const legacyClamp = opt.get('legacyclamp') === '1';
 const $ = (id) => document.getElementById(id);
 
 const sim = createSim({ seed: num('seed'), gain: num('gain'), hurt: num('hurt') });
@@ -71,6 +73,32 @@ const BOSS_STYLE = { kind: 'boss', scale: 1.15, robe: 0x302e38, under: 0x626066,
 const player = new Figure(PLAYER_STYLE);
 const boss = new Figure(BOSS_STYLE);
 scene.add(player.root, boss.root, player.trail, boss.trail);
+// footsteps come from the feet actually landing (figure.js), so they follow the visible gait
+player.onStep = (sp) => { if (started && !paused && sim.mode !== 'intro' && sim.player.y <= 0) sound.play('step', Math.min(1, 0.4 + sp / 7)); };
+boss.onStep = (sp) => { if (started && !paused && sim.mode === 'fight') sound.play('step', Math.min(0.6, 0.25 + sp / 10)); };
+
+// Recording hook, present only with #rec=1 (used by tests/record-clip.mjs for the evidence clip and
+// the audio measurements). It reads the picture and the master output; it cannot change game state.
+if (opt.get('rec') === '1') {
+  let mr = null, chunks = [];
+  window.__rec = {
+    startVideo(bits = 1300000) {
+      const st = renderer.domElement.captureStream(30), a = sound.tapStream();
+      if (a) for (const t of a.getAudioTracks()) st.addTrack(t);
+      const type = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'].find((m) => MediaRecorder.isTypeSupported(m));
+      chunks = []; mr = new MediaRecorder(st, { mimeType: type, videoBitsPerSecond: bits, audioBitsPerSecond: 96000 });
+      mr.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+      mr.start(500);
+      return { type, audioTracks: st.getAudioTracks().length, videoTracks: st.getVideoTracks().length };
+    },
+    stopVideo: () => new Promise((res) => {
+      mr.onstop = () => { const blob = window.__rec.blob = new Blob(chunks, { type: 'video/webm' }), fr = new FileReader(); fr.onload = () => res(String(fr.result).split(',')[1]); fr.readAsDataURL(blob); };
+      mr.stop();
+    }),
+    startPcm: (bus) => sound.startPcm(bus),
+    stopPcm: (wav) => sound.stopPcm(wav),
+  };
+}
 // faint ground rings: barely there in normal play, bright only while the Warden is Unbalanced
 const mark = (c, o) => { const m = new THREE.Mesh(new THREE.RingGeometry(0.52, 0.6, 32), new THREE.MeshBasicMaterial({ color: c, transparent: true, opacity: o, depthWrite: false, fog: false })); m.rotation.x = -Math.PI / 2; m.position.y = 0.03; scene.add(m); return m; };
 const pMark = mark(0xcfd8e4, 0.1), bMark = mark(0x8fd8cc, 0.14);
@@ -126,10 +154,21 @@ if (gallery) {
 }
 
 // ---------------------------------------------------------------- input
-let started = false;
+// Final key scheme: Left Shift = Step / Bind-Step, Space = jump, J / left mouse = cut (tap) or
+// Reaping Cut (hold, release when charged), R = Dew Gourd (flask) during the fight, K / right mouse =
+// guard, F / E = Moonwheel, Q / Tab / middle mouse = Fix Gaze, P / Esc = pause, M = mute, Enter = begin / retry.
+let started = false, paused = false;
 const keys = new Set();
-const edge = { attack: false, guardPress: false, dodge: false, finisher: false };
-let mouseGuard = false;
+const edge = { attack: false, guardPress: false, dodge: false, finisher: false, jump: false, drink: false };
+let mouseGuard = false, mouseAtk = false;
+function clearInput() { keys.clear(); mouseGuard = mouseAtk = false; for (const k in edge) edge[k] = false; }
+function setPaused(v) {
+  if (v === paused || !started || sim.mode === 'victory' || sim.mode === 'defeat') return;
+  paused = v;
+  clearInput(); sim.clearActions(); // no charge, jump or half-drunk flask survives a pause
+  $('pause').classList.toggle('hidden', !v);
+  sound.setPaused(v);
+}
 const cam = { lock: true, yaw: Math.PI, pitch: 0.28, pos: new THREE.Vector3(7, 5, 15), look: new THREE.Vector3(0, 1.2, 0), shake: 0, fwd: new THREE.Vector3(0, 0, -1), mouseX: 0.5 };
 let lastMX = null, lastMY = null;
 
@@ -141,8 +180,8 @@ function toggleLock() {
 }
 function begin() {
   sound.init(); sound.active = true; sound.phase = 1; sound.play('start');
-  sim.reset(); started = true;
-  for (const k in edge) edge[k] = false;
+  sim.reset(); started = true; paused = false; $('pause').classList.add('hidden'); sound.setPaused(false);
+  clearInput(); ui.flask = -1;
   if (!cam.lock) toggleLock();
   $('title').classList.add('hidden'); $('result').classList.add('hidden'); $('hud').classList.remove('hidden');
   $('bars').classList.remove('on'); $('danger').classList.remove('on');
@@ -150,31 +189,37 @@ function begin() {
 }
 window.addEventListener('keydown', (e) => {
   if (['Space', 'Tab', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.code)) e.preventDefault();
-  if (e.repeat) return;
-  keys.add(e.code);
+  if (e.repeat) return; // every action below is edge-triggered: holding a key never repeats it
   const over = sim.mode === 'victory' || sim.mode === 'defeat';
-  if (e.code === 'KeyM') sound.setMuted(!sound.muted);
+  if (e.code === 'KeyM') { sound.setMuted(!sound.muted); $('muteTag').classList.toggle('hidden', !sound.muted); }
   if (!started) { if (e.code === 'Enter') begin(); return; }
-  if (over) { if ((e.code === 'KeyR' || e.code === 'Enter') && sim.modeT > 0.4) begin(); return; }
+  // result screen: Enter (or the button) only. R is the flask key and does nothing here.
+  if (over) { if (e.code === 'Enter' && sim.modeT > 0.4) begin(); return; }
+  if (e.code === 'KeyP' || e.code === 'Escape') { setPaused(!paused); return; }
+  if (paused) return;
+  keys.add(e.code);
   switch (e.code) {
     case 'KeyJ': edge.attack = true; break;
     case 'KeyK': edge.guardPress = true; break;
-    case 'Space': edge.dodge = true; break;
+    case 'ShiftLeft': edge.dodge = true; break;
+    case 'Space': edge.jump = true; break;
+    case 'KeyR': edge.drink = true; break;
     case 'KeyF': case 'KeyE': edge.finisher = true; break;
     case 'KeyQ': case 'Tab': toggleLock(); break;
   }
 });
 window.addEventListener('keyup', (e) => keys.delete(e.code));
-window.addEventListener('blur', () => { keys.clear(); mouseGuard = false; });
+window.addEventListener('blur', () => { clearInput(); if (started) sim.clearActions(); });
+document.addEventListener('visibilitychange', () => { if (document.hidden && started && sim.mode === 'fight') setPaused(true); });
 window.addEventListener('contextmenu', (e) => e.preventDefault());
 window.addEventListener('mousedown', (e) => {
-  if (!started || e.target.closest('button')) return;
+  if (!started || paused || e.target.closest('button')) return;
   e.preventDefault();
-  if (e.button === 0) edge.attack = true;
+  if (e.button === 0) { edge.attack = true; mouseAtk = true; }
   else if (e.button === 2) { mouseGuard = true; edge.guardPress = true; }
   else if (e.button === 1) toggleLock();
 });
-window.addEventListener('mouseup', (e) => { if (e.button === 2) mouseGuard = false; });
+window.addEventListener('mouseup', (e) => { if (e.button === 2) mouseGuard = false; if (e.button === 0) mouseAtk = false; });
 window.addEventListener('mousemove', (e) => {
   // works with or without pointer lock: uses position deltas
   const dx = lastMX === null ? 0 : e.clientX - lastMX, dy = lastMY === null ? 0 : e.clientY - lastMY;
@@ -183,13 +228,14 @@ window.addEventListener('mousemove', (e) => {
 });
 $('start').addEventListener('click', begin);
 $('retry').addEventListener('click', begin);
+$('resume').addEventListener('click', () => setPaused(false));
 window.addEventListener('resize', () => { renderer.setSize(window.innerWidth, window.innerHeight); camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix(); });
 
 function readInput() {
   const f = (keys.has('KeyW') ? 1 : 0) - (keys.has('KeyS') ? 1 : 0), r = (keys.has('KeyD') ? 1 : 0) - (keys.has('KeyA') ? 1 : 0);
   const fx_ = cam.fwd.x, fz = cam.fwd.z;
   // camera-relative: forward (fx,fz), right (-fz, fx)
-  const inp = { mx: fx_ * f - fz * r, mz: fz * f + fx_ * r, guard: mouseGuard || keys.has('KeyK'), locked: cam.lock, ...edge };
+  const inp = { mx: fx_ * f - fz * r, mz: fz * f + fx_ * r, guard: mouseGuard || keys.has('KeyK'), attackHeld: mouseAtk || keys.has('KeyJ'), locked: cam.lock, ...edge };
   for (const k in edge) edge[k] = false;
   return inp;
 }
@@ -215,7 +261,17 @@ function updateHud() {
   const h = sim.nextHit();
   $('danger').classList.toggle('on', !!(h && h.type === 'thrust' && h.inT <= MOVES[b.move].hits[h.idx].cue));
   $('bars').classList.toggle('on', p.state === 'finisher' || b.state === 'phaseShift' || sim.mode === 'intro');
+  if (ui.flask !== p.flask) {
+    ui.flask = p.flask;
+    document.querySelectorAll('#flask .gd').forEach((g, i) => g.classList.toggle('on', i < p.flask));
+    $('flaskN').textContent = '×' + p.flask;
+  }
+  // charge meter under the Balance bar: fills over the wind-up, gold once the Reaping Cut is ready
+  const ch = p.state === 'charge' ? Math.min(1, (p.t - CHARGE.COMMIT) / (CHARGE.FULL - CHARGE.COMMIT)) : 0;
+  setBar('chargeFill', Math.round(ch * 50) / 50);
+  $('charge').classList.toggle('on', p.state === 'charge'); $('charge').classList.toggle('full', p.state === 'charge' && p.chargeFull);
 }
+function flaskDeny() { const f = $('flask'); f.classList.remove('deny'); void f.offsetWidth; f.classList.add('deny'); }
 function showResult(win) {
   const r = $('result'), st = sim.stats;
   r.className = 'screen ' + (win ? 'win' : 'lose');
@@ -235,8 +291,31 @@ function handle(e) {
     case 'swing': sound.play('swing'); break;
     case 'bossSwing': sound.play('bossSwing'); break;
     case 'dodge': sound.play('dodge'); break;
-    case 'hitBoss': sound.play('hitBoss'); fx.burst(e.x, y, e.z, 10, 0x9ff0e0, 5); cam.shake = Math.max(cam.shake, 0.08); boss.kick(0.55, 0.2); break;
-    case 'bossBlock': sound.play('bossBlock'); fx.burst(e.x, y, e.z, 6, 0xb0c8d0, 4); boss.kick(0.3, 0.3); player.kick(0.25, -0.5); break;
+    case 'hitBoss':
+      sound.play(e.heavy ? 'heavyHit' : 'hitBoss'); fx.burst(e.x, y, e.z, e.heavy ? 26 : 10, 0x9ff0e0, e.heavy ? 8 : 5); cam.shake = Math.max(cam.shake, e.heavy ? 0.28 : 0.08); boss.kick(e.heavy ? 1.1 : 0.55, 0.2);
+      if (e.heavy) { callout('刈斩', 'Reaping Cut', 'reap'); fx.ring(e.x, y, e.z, 0xbfe8ff, 0.2, 2.2, 0.35, false, camera); }
+      break;
+    case 'bossBlock':
+      sound.play(e.heavy ? 'heavyBlock' : 'bossBlock'); fx.burst(e.x, y, e.z, e.heavy ? 18 : 6, 0xb0c8d0, e.heavy ? 7 : 4); boss.kick(e.heavy ? 0.9 : 0.3, 0.3); player.kick(0.25, -0.5);
+      if (e.heavy) { callout('破架', 'Guard beaten down', 'reap'); cam.shake = Math.max(cam.shake, 0.2); }
+      break;
+    case 'jump': sound.play('jump'); break;
+    case 'land': sound.play('land'); fx.burst(sim.player.x, 0.1, sim.player.z, 8, 0x6f7a5a, 2.2, { life: 0.35 }); player.dip.v -= 0.9; break;
+    case 'chargeStart': sound.play('chargeStart'); break;
+    case 'chargeFull': // visible + audible "ready": pale-blue flare on the blade and a two-note chime
+      sound.play('chargeFull');
+      player.tip.getWorldPosition(tipPos);
+      fx.ring(tipPos.x, tipPos.y, tipPos.z, 0xbfe8ff, 0.1, 1.3, 0.35, false, camera); fx.flash(tipPos.x, tipPos.y, tipPos.z, 0xa8dcff, 26, 0.3);
+      break;
+    case 'heavySwing': sound.play('heavySwing'); break;
+    case 'chargeBreak': sound.stopCharge(); callout('蓄势被破', 'Charge broken', 'bad'); break;
+    case 'drinkStart': sound.play('drinkStart'); break;
+    case 'heal':
+      sound.play('heal'); callout('甘露', `Dew Gourd  +${Math.round(e.amount)}`, 'heal');
+      fx.burst(sim.player.x, 1.3, sim.player.z, 18, 0x9be8b4, 2.4, { up: true, lift: 2.5, g: -1, life: 0.9 }); fx.ring(sim.player.x, 0.06, sim.player.z, 0x8fe0a8, 0.3, 1.6, 0.6, true);
+      break;
+    case 'drinkBreak': callout('饮药被断', 'Drink interrupted — nothing spent', 'bad'); break;
+    case 'drinkFail': sound.play('deny'); flaskDeny(); callout(e.empty ? '葫芦已空' : '气血已满', e.empty ? 'The gourd is empty' : 'Already at full health', 'deny'); break;
     case 'bossDeflect': callout('被拨开', 'Turned aside', 'bad'); player.kick(0.7, -1); break;
     case 'guard': sound.play('guard'); fx.burst(e.x, y, e.z, 8, 0xd0703a, 3.5, { life: 0.3 }); cam.shake = Math.max(cam.shake, 0.12); player.kick(0.95, 0.3); boss.kick(0.2); break;
     case 'deflect':
@@ -301,9 +380,13 @@ function updateCamera(dt, t) {
   } else if (cam.lock) {
     let dx = p.x - b.x, dz = p.z - b.z; const d = Math.hypot(dx, dz);
     if (d > 0.3) lastDir.set(dx / d, 0, dz / d);
-    const back = 4.4 + d * 0.22;
-    want.set(p.x + lastDir.x * back - lastDir.z * 1.7, 2.75 + d * 0.06, p.z + lastDir.z * back + lastDir.x * 1.7);
-    look.set(p.x * 0.42 + b.x * 0.58, 1.2, p.z * 0.42 + b.z * 0.58);
+    // closer and lower than before so the Warden's feet, blade and wind-up read clearly; the
+    // shoulder offset keeps the Reedcutter off the line between the lens and the Warden
+    // (at sword's length the lens also rises and swings wider, so the Warden shows past the Reedcutter's shoulder)
+    const near = 1 - Math.max(0, Math.min(1, (d - 1.2) / 2.2));
+    const back = 3.15 + d * 0.2, side = 1.55 + Math.min(0.3, d * 0.04) + near * 0.55;
+    want.set(p.x + lastDir.x * back - lastDir.z * side, 1.95 + d * 0.07 + near * 0.5 + p.y * 0.45, p.z + lastDir.z * back + lastDir.x * side);
+    look.set(p.x * 0.4 + b.x * 0.6, 1.02 + p.y * 0.4, p.z * 0.4 + b.z * 0.6);
     if (sim.mode === 'intro') rate = 2.2;
   } else {
     // free look: mouse deltas, arrow keys, and gentle edge-turn when the cursor rests at a screen edge
@@ -311,8 +394,8 @@ function updateCamera(dt, t) {
     cam.yaw += turn * 2.2 * dt;
     cam.pitch = Math.max(-0.1, Math.min(0.9, cam.pitch + ((keys.has('ArrowDown') ? 1 : 0) - (keys.has('ArrowUp') ? 1 : 0)) * dt));
     const cp = Math.cos(cam.pitch);
-    want.set(p.x - Math.sin(cam.yaw) * cp * 5.6, 1.5 + Math.sin(cam.pitch) * 5.6, p.z - Math.cos(cam.yaw) * cp * 5.6);
-    look.set(p.x, 1.35, p.z); rate = 14;
+    want.set(p.x - Math.sin(cam.yaw) * cp * 4.9, 1.45 + Math.sin(cam.pitch) * 4.9 + p.y * 0.45, p.z - Math.cos(cam.yaw) * cp * 4.9);
+    look.set(p.x, 1.3 + p.y * 0.5, p.z); rate = 14;
   }
   // the camera may back a few metres into the reed belt (stalks around it lie down, see world.js)
   const r = Math.hypot(want.x, want.z), maxR = C.ARENA_R + 3.4;
@@ -328,21 +411,23 @@ function updateCamera(dt, t) {
 
 // ---------------------------------------------------------------- frame loop
 const violet = new THREE.Color(0xc040ff), amber = new THREE.Color(0xffa040), teal = new THREE.Color(BOSS_STYLE.bladeGlow);
-let lastT = performance.now(), acc = 0, frames = 0, fps = 0, fpsAcc = 0, fpsN = 0, wall = 0;
+let lastT = performance.now(), acc = 0, steps = 0, frames = 0, fps = 0, fpsAcc = 0, fpsN = 0, wall = 0;
 function frame() {
   const now = performance.now();
   const raw = (now - lastT) / 1000; lastT = now;
-  // Clamped frame delta: 50 ms while fighting (slow frames slow the duel down instead of skipping
-  // it); outside the fight (title, intro, result) up to 250 ms, so a slow renderer does not stall
-  // the opening.
-  const dt = Math.min(started && sim.mode === 'fight' ? 0.05 : 0.25, Math.max(0, raw));
+  // Frame-rate independence: the simulation runs as many fixed 60 Hz steps as the elapsed wall
+  // time needs, so the duel keeps real-time durations at 10–20 fps. The frame delta is clamped to
+  // 250 ms (at most 15 catch-up steps), so a long stall such as a tab switch is dropped, not replayed.
+  // (#legacyclamp=1 restores the previous 50 ms in-fight clamp, only so tests/measure-timing.mjs can
+  // measure the old slow-motion behaviour against the new one on the same build.)
+  const dt = Math.min(legacyClamp && started && sim.mode === 'fight' ? 0.05 : 0.25, Math.max(0, raw));
   governQuality(raw);
   wall += dt; fpsAcc += raw; fpsN++;
   if (fpsAcc >= 0.5) { fps = fpsN / fpsAcc; fpsAcc = 0; fpsN = 0; }
-  if (started) {
+  if (started && !paused) {
     acc += dt;
     while (acc >= C.STEP) {
-      acc -= C.STEP;
+      acc -= C.STEP; steps++;
       sim.step(readInput());
       for (const e of sim.events) handle(e);
       sim.events.length = 0;
@@ -351,8 +436,15 @@ function frame() {
   }
   const p = sim.player, b = sim.boss;
   const [pp, pr, pe] = playerPose(sim), [bp, br, be] = bossPose(sim);
-  const still = sim.hitstop > 0 ? 0 : dt;
+  const still = sim.hitstop > 0 || paused ? 0 : dt;
+  pe.yOff = p.y;
   player.update(still, p.x, p.z, p.face, pp, pr, pe);
+  // the Reedcutter's blade gathers a pale-blue light while a Reaping Cut is charged
+  const pm = player.bladeMat, chg = p.state === 'charge' ? Math.min(1, p.t / CHARGE.FULL) : 0;
+  pm.emissiveIntensity = p.state === 'charge' ? (p.chargeFull ? 3.2 + Math.sin(wall * 30) * 0.9 : 0.3 + chg * 1.4) : p.state === 'heavy' && p.t < 0.3 ? 2.6 : 0.3;
+  if (p.state !== 'charge') sound.stopCharge();
+  // ambience follows the same wind that bends the reeds, heard from where the Reedcutter stands
+  sound.setWind(world.gustAt(p.x, p.z, wall), started && sim.mode === 'fight');
   boss.update(still, b.x, b.z, b.face, bp, br, be);
   if (galFigs) for (const g of galFigs) g.f.update(dt, g.x, g.z, g.gy, g.f.poses[g.n], 10);
   pMark.position.set(p.x, 0.03, p.z); bMark.position.set(b.x, 0.03, b.z);
@@ -365,7 +457,7 @@ function frame() {
   else { m.emissive.copy(teal); m.emissiveIntensity = 0.3; }
   const broken = b.state === 'broken';
   bMark.material.color.set(broken ? 0xfff0a0 : 0x8fd8cc); bMark.material.opacity = broken ? 0.55 : 0.14; bMark.scale.setScalar(broken ? 1.5 + Math.sin(wall * 8) * 0.15 : 1.25);
-  fx.update(dt);
+  fx.update(paused ? 0 : dt);
   updateCamera(dt, wall);
   world.update(wall, camera);
   if (started) updateHud();
@@ -380,8 +472,9 @@ Object.defineProperty(window, '__game', {
     get snap() {
       const p = sim.player, b = sim.boss, h = sim.nextHit();
       return {
-        mode: started ? sim.mode : 'title', time: sim.time, frames, fps, backend,
-        player: { x: p.x, z: p.z, face: p.face, hp: p.hp, stance: p.stance, state: p.state },
+        mode: started ? sim.mode : 'title', time: sim.time, frames, fps, backend, paused, steps, now: performance.now(),
+        player: { x: p.x, z: p.z, y: p.y, face: p.face, hp: p.hp, stance: p.stance, state: p.state, t: p.t, flask: p.flask, chargeFull: p.chargeFull, combo: p.combo },
+        audio: sound.info(),
         boss: { x: b.x, z: b.z, hp: b.hp, stance: b.stance, state: b.state, phase: b.phase, move: b.state === 'attack' ? b.move : null, movesSeen: { 1: b.movesSeen[1].slice(), 2: b.movesSeen[2].slice() } },
         dist: Math.hypot(p.x - b.x, p.z - b.z),
         nextHit: h, hitSeq: sim.hitSeq, chain: sim.chain, promptOpen: sim.promptOpen, stats: { ...sim.stats },

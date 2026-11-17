@@ -6,11 +6,12 @@
 import { chromium } from 'playwright';
 import { createRequire } from 'node:module';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { pathToFileURL, fileURLToPath } from 'node:url';
 
 const check = createRequire(import.meta.url)('./online-check.cjs');
 const args = process.argv.slice(2);
-const url = args.find((a) => !a.startsWith('--')) || pathToFileURL(path.resolve('dist/play.html')).href;
+const here = path.dirname(fileURLToPath(import.meta.url));
+const url = args.find((a) => !a.startsWith('--')) || pathToFileURL(path.resolve(here, '..', 'dist', 'play.html')).href;
 const launch = args.includes('--webgpu')
   ? { channel: 'chrome', args: ['--enable-unsafe-webgpu', '--enable-features=Vulkan', '--ignore-gpu-blocklist', '--use-angle=d3d11', '--enable-gpu'] }
   : args.includes('--swgpu')

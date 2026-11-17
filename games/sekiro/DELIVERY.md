@@ -3,8 +3,12 @@
 Date: 2026-11-17 · Deliverable: `dist/play.html` (single self-contained file, 896.90 kB, 252 kB gzipped)
 
 > The sections below up to "Published page check" describe the first delivery. Where the realism
-> pass changed something, the **Realism pass** section at the end is the current record (look,
+> pass changed something, the **Realism pass** section is the record for that pass (look,
 > frame-delta clamp, quality scaling, test results, known issues).
+>
+> **Current state: see "Controls, motion and audio pass" at the end.** It supersedes the controls
+> table below (Step moved to Left Shift, Space is jump, R is the flask, retry is Enter only), the
+> frame-delta clamp, the camera, the rigid-segment bodies and the audio bed described earlier.
 
 ## Build
 
@@ -345,3 +349,275 @@ before the last change, which only tightened start-screen CSS spacing.
   far as a 2048² map allows.
 - Not judged by a human player: feel and weight of the motion were assessed from screenshots only.
   Audio is unchanged and still unverified by ear.
+
+## Controls, motion and audio pass (2026-11-17)
+
+Upgrade brief `tasks/sekiro.controls.md`. Worked on the existing code. Combat rules (guard, Glance,
+chained Glances, Bind-Step, Balance, Moonwheel, two phases), the URL hash options, the
+`window.__game` probe and the single-file offline HTML are kept; the renderer is still Three.js
+`WebGPURenderer` with the WebGL 2 fallback. Deliverable: `dist/play.html`, 929.05 kB (262 kB
+gzipped; was 896.90 kB).
+
+### Final key list
+
+| Action | Input |
+| --- | --- |
+| Move | `W` `A` `S` `D` (camera-relative) |
+| Cut — light cut / 3-step combo (short press) | Left mouse or `J` (identical code path) |
+| Reaping Cut — charged heavy (hold, release after the flare) | Left mouse or `J` |
+| Guard (hold) / Glance (press ≤ 0.22 s before impact) | Right mouse or `K` |
+| Step (dodge) and Bind-Step (`W` + Left Shift into the violet-flare thrust) | **Left Shift only** (`KeyboardEvent.code === "ShiftLeft"`) |
+| Jump | **Space only** (the old Space step binding is removed) |
+| Dew Gourd — healing flask | `R`, during the fight only |
+| Moonwheel (finisher, when prompted) | `F` / `E`; left mouse or `J` also works while the prompt is open |
+| Fix Gaze (lock-on toggle) | `Q` / `Tab` / middle mouse |
+| Free-camera look | Mouse move / arrow keys / cursor at a screen edge |
+| Pause / resume | `P` / `Esc` (new; also pauses when the tab is hidden) |
+| Mute | `M` |
+| Begin / Retry | `Enter` or the button. **`R` no longer retries**: on the result screen `R`, Space and Left Shift do nothing, so a retry can never be confused with a drink |
+
+The HUD hint line, the start-screen key table and tips, the result button label and README.md
+were updated to this list. The HUD gained the flask row (three gourd pips and `×n`) and a thin
+charge meter under the Reedcutter's bars.
+
+### Numbers (all in `src/sim.js`, blocks `JUMP`, `CHARGE`, `FLASK`)
+
+- **Jump**: 0.08 s take-off crouch, launch 6.4 m/s under 21 m/s² (peak ≈ 0.98 m, ≈ 0.61 s
+  airborne), 0.14 s landing recovery, then normal input. Take-off carries the run velocity; in the
+  air the velocity is steered toward the held direction at 9 m/s² up to 4.6 m/s. Edge-triggered:
+  holding Space does not jump again. The reed boundary clamp, the minimum distance to the Warden
+  and the ground apply while airborne.
+  **Interaction with boss attacks (decision):** no invulnerability of any kind. Airborne the
+  Reedcutter cannot guard, Glance, cut, step or drink; every blow whose reach and arc cover the
+  fighter lands exactly as on the ground and knocks the fighter down (gravity keeps acting in the
+  stagger). A jump only helps by carrying run speed out of reach, as running would.
+- **Reaping Cut (charged heavy)**: the press starts the ordinary cut; if the button is still held
+  0.12 s after the press (before the light hit frame at 0.16 s) the cut turns into a charge and
+  the light hit never happens. "Fully charged" at 0.65 s from the press (pale-blue flare and ring
+  on the blade, blade glow, HUD meter turns white, two-note chime). Releasing from then on:
+  heavy cut, hit 0.18 s after release with a 0.7 m lunge, reach 3.2 m, recovery 0.85 s (Step
+  cancels after 0.5 s). Releasing earlier lets the one ordinary cut through. Step or a Guard press
+  abandons a charge without a cut. Walking speed while charging 1.3 m/s. Damage: against an open
+  Warden (mid-move, pinned, Unbalanced) 18 health (24 when Unbalanced) and 15 Balance × (1–1.8,
+  rising as its health falls); against its guard 6 chip health and 11 Balance with no riposte.
+  For comparison a light cut is 7 health / 6 Balance open, 4 Balance blocked, and three blocked
+  light cuts trigger a riposte; a Glance gives 9–20 Balance. The whole heavy takes ≥ 0.83 s and is
+  broken by any hit, so it rewards spacing and lulls and does not replace Glances.
+- **Dew Gourd (flask)**: 3 charges, 38 health each, capped at 100. `R` starts the drink (walk at
+  1.4 m/s, no cancel); the **sip at 0.70 s** is the one moment at which the charge is consumed and
+  the heal applied; 0.35 s recovery follows. A hit before the sip interrupts the drink: nothing
+  consumed, nothing healed. At full health or with an empty gourd: refusal sound, the flask row
+  shakes red, a callout names the reason, nothing is consumed. Retry restores 3 charges.
+- **Clean-up**: pause and window blur call `sim.clearActions()` (charge, unfinished drink and jump
+  are dropped, held keys cleared, so nothing fires on return); a hit ends a charge or drink;
+  death and retry reset through the normal state change / `reset()`.
+
+### Characters, camera, frame-rate independence (section 2)
+
+- **Skinned bodies.** Every joint of both fighters is now a `THREE.Bone`; the trunk (crotch to
+  neck), each sleeve, each forearm and each leg is a `THREE.SkinnedMesh` built from lofted
+  elliptical cross-sections, each ring weighted to one or two bones (shoulder into chest, elbow,
+  hip into pelvis, knee, waist). The existing two-bone IK (planted, stepping feet; both hands on
+  the hilt) drives the same bones. Hands are a closed fist: back of the hand, a finger ring around
+  the hilt axis and a thumb. The Reedcutter's and the Warden's costumes, hat, mask, mantle, cloth
+  panels and blades are unchanged. **Depth cut here:** this is my own skinning on the existing rig;
+  the sibling game's `notes/rainlane-fighter.reference.js` was not read or ported, cloth is still
+  hinged panels, and there are no separate fingers.
+- **Lock-on camera**: distance behind the Reedcutter 4.4 + 0.22 d → 3.15 + 0.20 d, height
+  2.75 → 1.95 (+0.07 d), shoulder offset 1.7 → 1.55–1.85, aim point lowered to 1.02 m and moved
+  toward the Warden; below about 3 m the lens rises up to 0.5 m and swings up to 0.55 m wider so
+  the Warden shows past the Reedcutter's shoulder; the camera rises with a jump (0.45 × height). Free camera 5.6 → 4.9 m.
+  Checked in screenshots: normal exchange (`after-combat.png`), close range and at the boundary
+  with reeds beside the lens (`review/after-locked.png`, `after-locked2.png`,
+  `after-boundary.png`), and a running jump in the clip. The offline suite's lock-on framing
+  checks pass unchanged.
+- **Separation**: character materials get a 1.5× stronger moon rim and a faint cool emissive lift
+  of their own colour; the field's lighting, fog and exposure are unchanged.
+- **Frame-rate independence**: the frame delta is no longer clamped to 50 ms in the fight. Each
+  frame runs as many fixed 60 Hz steps as the elapsed time needs, capped at 250 ms (15 steps) so
+  long stalls are dropped. `tests/measure-timing.mjs` measures wall-clock durations with real key
+  presses, on the same build, as shipped and with `#legacyclamp=1` (the previous clamp):
+
+  | Renderer | Mode | fps | sim s per wall s | Boss string *Twin Rustle* (1.70 s) | Jump (0.69 s) | Charge to full (0.65 s) |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | Hardware WebGPU (Chrome) | before (old clamp) | 173 | 0.999 | 1.713 s | 0.666 s | 0.653 s |
+  | Hardware WebGPU (Chrome) | after | 171 | 0.999 | 1.707 s | 0.660 s | 0.652 s |
+  | Software WebGL 2 (bundled Chromium, SwiftShader, tier 4) | before (old clamp) | 14.7 | 0.726 | 2.342 s | 0.851 s | 0.941 s |
+  | Software WebGL 2 (bundled Chromium, SwiftShader, tier 4) | after | 14.5 | 0.999 | 1.742 s | 0.576 s | 0.589 s |
+
+  Readings are taken at frame boundaries, so at 14.5 fps each carries about ± 0.07 s. Raw files:
+  `compare/controls/timing-hardware.json`, `timing-software.json`. Frame rate itself is unchanged
+  by this pass (hardware 162 → 173 fps in the compare-shots run, software 14–15 fps at tier 4).
+
+### Ambience and audio (section 3)
+
+What was there: the field showed **no rain at all**, and the audio bed was one band-passed noise
+loop ("wind") with two sine LFOs plus timed insect chirps — a constant hiss. Decision: mostly wind
+with a sparse light drizzle, and matching, very faint visuals (150 short streaks around the
+camera, opacity 0.1, drifting with the reed wind).
+
+New bed, all synthesised in `src/audio.js` (no recordings, no new assets):
+
+1. distant drizzle curtain: 7.3 s stereo noise, high-pass 1.7 kHz / low-pass 3.8–6.4 kHz, level,
+   colour and pan re-drawn at random every 4–10 s with 3–4 s glides;
+2. wind through the reeds: a low body (band-pass 260–640 Hz) and a leaf hiss (2.2–3.9 kHz) whose
+   levels follow `world.gustAt()` — the same travelling gust expression and slowly wandering wind
+   strength that now drive the reed shader, evaluated where the Reedcutter stands;
+3. single drops as a Poisson stream (0.9–5 per second, drifting): 55 % on grass blades (short
+   band-passed ticks, 3–7 kHz), 35 % on mud (low-passed pat plus a falling thump), 10 % into
+   standing water (rising blip), each with random level, distance and pan;
+4. marsh insects at random 2.5–11.5 s intervals.
+
+Mix: ambience has its own bus. Glance bell, violet-flare wail, hits, guard, Bind-Step, break,
+finisher, charge cue and flask sounds duck it to 35 % and low-pass it at 1.8 kHz for 0.3–1.6 s;
+it also sits at 80 % during the fight. New sounds: footsteps (triggered by the figures' feet
+landing), jump, landing, charge hum (cut off on release or interruption), "fully charged" chime,
+heavy swing / hit / guard-crush, drink (cork and three swallows), heal, refusal.
+
+**Measured numbers** (`node tests/record-clip.mjs`, PCM captured inside the page at 48 kHz on
+hardware WebGPU Chrome; file `compare/controls/audio-measure.json`; RMS windows are 85 ms):
+
+| Capture | Length | Peak | RMS | Window RMS p10 / p50 / p90 | Clipped samples |
+| --- | --- | --- | --- | --- | --- |
+| Ambience bus alone, moving around the field (× master gain 0.7, before the compressor) | 20.14 s | −16.7 dBFS | −36.7 dBFS | −46.9 / −38.4 / −33.2 dBFS | 0 |
+| Final output during the recorded fight (ambience + steps + combat cues + flask + music) | 26.11 s | −5.7 dBFS | −28.7 dBFS | −38.6 / −33.5 / −25.4 dBFS | 0 |
+| Final output while muted (`M`) | 1.45 s | 0 (digital silence) | 0 | — | 0 |
+| Final output while paused (`P`) | context `suspended`, 0 samples delivered in 1.5 s | — | — | — | — |
+| Audio track decoded back out of `gameplay.webm` | 29.34 s, 2 ch | −5.5 dBFS | −28.1 dBFS | 294 of 294 100 ms windows above −60 dBFS | — |
+
+So the ambience alone sits about 8 dB under the fight mix, varies by about 14 dB between its
+quiet and loud tenths (it is not a constant level), and nothing clips. 42 drops were scheduled in
+the 20 s sample. The bed is random, so these numbers move by a few dB from run to run (an earlier
+run of the same build gave −38.6 dBFS RMS and 34 drops).
+
+**Listening: nobody listened to any of this in this session.** Whether the bed sounds like an
+open fen, whether the drops sound like water, and whether the level is pleasant are unverified;
+only the numbers above and the automated start / pause / mute / resume checks exist.
+`compare/controls/ambience.wav` (20 s, 16-bit stereo, decimated 2:1 to 24 kHz to keep the file
+at 1.8 MB, so content above 12 kHz is absent from the sample) and the clip are there to be heard.
+
+### Test results (actual, this session)
+
+Commands, in the launcher's order on this machine (Windows 11, Node 26.13.1): `npm ci` → exit 0
+(20 packages); `npm run build` → exit 0 (`dist/play.html` 929.05 kB); `npm run install:browsers`
+→ exit 0; `npm run test:offline` → exit 0, **PASSED 94 checks, 0 page errors** (see A; last run
+on the final build, about 9 minutes on the software renderer). Also `npm run test:sim` → "sim
+tests passed".
+
+**A. Real-input offline suite** (`tests/offline.mjs`: only `play.html` copied to a fresh temp
+directory, `file://`, offline context with every non-file request aborted and counted, real
+keyboard and mouse; the probe is read-only). Three runs in one invocation:
+
+- *win run* (`#seed=11&q=low&hurt=0.3`, full fight regression): all earlier checks — title,
+  render, movement on W/A/S/D, lock-on framing and tracking, free look, mouse and `J` cuts, held
+  guard, Glance, chained Glances, Bind-Step (now `W` + Left Shift), both stance breaks, finisher
+  prompt, phase change and phase-two moves, victory — plus: the fight is won with zero jumps;
+  `R`, Space and Left Shift do nothing on the result screen; `Enter` retries with 3 flask charges.
+- *loss run* (`#seed=5&q=low&hurt=0.5`, full fight to defeat): `R` at full health refused (count
+  3, callout, HUD `×3`); `K` guard; Left Shift steps without jumping; a drink interrupted by a hit
+  (no charge spent, health only fell); three drinks each sampled at the sip with `R` held down
+  throughout (exactly one charge each, health = min(100, before + 38): 63 → 100, 85 → 100,
+  90 → 100 in the last run); HUD shows the empty gourd; `R` with an empty gourd refused; defeat;
+  mouse retry restores 3 charges.
+- *controls run* (`#seed=11&q=low&hurt=0.08`): no audio context before the first gesture, running
+  after it with drops being scheduled; Left Shift steps and does not jump; Space jumps, leaves the
+  ground (0.92 m sampled) and lands and does not step; Space held does not re-jump; movement after
+  landing; simulation rate 1.003 sim s per wall s at 16.8 fps (3.5 steps per frame); `J` tap = one light cut; three
+  clicks = combo steps 0,1,2 and no heavy; hold (mouse, then `J`) → charge → cue visible →
+  release = exactly one heavy and no light cut; early release = one ordinary cut; pause with a
+  held charge (overlay, frozen sim, charge dropped, keys ignored, audio `suspended`), resume (no
+  cut fires, audio running); mute (master gain 0, measured peak 0) and unmute; window blur drops
+  a charge; a hit interrupts a charge (no heavy); a charged cut that reaches the Warden damages it
+  (the script guards through one of the Warden's moves and charges in the pause after it).
+- global: no network requests attempted; no uncaught page errors.
+
+Run history of the whole suite on the software renderer in this session: one failed run while the
+new checks were being written (the script judged a drink after the quiet moment had passed —
+script fixed), then four consecutive passes of 94 checks: before `npm ci`, after `npm ci`, and
+twice on the final build (the last one with the final test script).
+
+The quiet moments these checks need are found with real movement keys (the script runs to the far
+side of the clearing or waits for the Warden to finish a move) and a check is repeated if a blow
+lands during it. `hurt` (documented option) only scales damage taken.
+
+**B. Render-path coverage**
+
+| Path | What ran | Kind |
+| --- | --- | --- |
+| WebGL 2, software (bundled Playwright Chromium, SwiftShader; quality `q=low`) | the whole offline suite A (win, loss, controls) | full fight regressions + control checks |
+| WebGL 2, software, default quality (auto tier 4) | `tests/online-check.cjs` via `run-online-check.mjs`: passed (see C); `measure-timing.mjs --gl` | start-up / smoke + timing |
+| WebGPU, hardware, default quality (tier 0, shadows on) | `tests/online-check.cjs` via `run-online-check.mjs --webgpu`: passed | start-up / smoke |
+| WebGPU, hardware (installed Chrome, GPU flags) | `compare-shots.mjs` (title, free-look run, lock-on wind-up, boundary, turn), `record-clip.mjs` (run, jumps, charged cuts, drink, guard, mute, pause), `measure-timing.mjs` | smoke / evidence runs with real input, not assertions on the fight outcome |
+| WebGPU, hardware (installed Chrome; `node tests/offline.mjs --gpu`, same hashes incl. `q=low`, page reported backend WebGPU, ~171 fps) | the whole offline suite A on the final build: PASSED 94 checks, 0 page errors. (Three full runs in all: pass, then one failure of the very last check — the test script released the charge before the first frame had registered the key press, a race that only shows at 170 fps; the script was fixed — then the pass recorded here.) | full fight regressions + control checks |
+| WebGL 2, hardware; WebGPU on a software adapter; other browsers | not run in this pass | — |
+
+**C. Online check hook** `tests/online-check.cjs` (same `async function(page)` contract, same
+time-outs for the earlier steps): after the mouse attack it now presses `ShiftLeft` until a step
+is counted, `Space` until a jump is counted, and `R` until the flask handler answers (a drink, or
+the counted refusal at full health). Run locally against the final `dist/play.html` (`file://`):
+bundled headless Chromium on software rendering (WebGL 2, tier 4, 12.8 fps) passed in 13.6 s
+(12.1 s on an idle machine); installed Chrome on hardware WebGPU (default quality, tier 0,
+148 fps) passed in 7.5 s. **Not run against the published URL** (nothing is published from this
+session).
+
+**D. Code-level tests** (`npm run test:sim`, no browser, synthetic inputs; separate from A):
+the earlier four scenarios still pass, plus jump (states, peak, air time, one jump per press,
+boundary while airborne, bounded air steering, inputs ignored in the air), a hit landing on an
+airborne fighter, tap vs. hold vs. early release vs. Step-cancel (event sequence; combo timing
+unchanged: second cut still starts at 0.34 s), heavy damage open (18) and on guard (6) and
+interruption, flask (refusal, sip moment, single heal, cap, pause before the sip, empty, reset,
+interruption by a hit), `clearActions`. These set health / charges directly where noted in the file.
+
+**E. Debug state injection**: none in A–C. `window.dispatchEvent(new Event('blur'))` is called
+from the controls run to simulate the window losing focus (an event, not a state write).
+
+### Evidence (`compare/controls/`)
+
+- `before-title.png`, `before-explore.png`, `before-combat.png` — taken first, from the unchanged
+  code, with `node tests/compare-shots.mjs before --dir=controls` (1280×720, default quality,
+  seed 3, real input, hardware WebGPU).
+- `after-title.png`, `after-explore.png`, `after-combat.png` — same script and steps;
+  `review/after-*.png` extra views (close crop, contact, cut, locked view, boundary, fast turn).
+- `gameplay.webm` — 29.3 s, 1280×720 VP9 + Opus, 4.50 MB, recorded in the page with
+  `MediaRecorder` over `canvas.captureStream(30)` plus a `MediaStreamAudioDestinationNode` on the
+  master output (hook exists only with `#rec=1`), driven by real input: run, running jump, charged
+  heavy, the Warden's attack, a drink, guarded blows, a second jump, a charged cut. Recorded
+  counters: see `audio-measure.json` → `clip.stats`. `review/clip-0…5.png` are frames read back
+  out of the file; I looked at two of them (fighters framed, reeds and streaks visible).
+- `ambience.wav`, `audio-measure.json`, `timing-hardware.json`, `timing-software.json`.
+
+Looked at and fixed from my own screenshots: drizzle streaks were too bright and long (opacity
+0.2 → 0.1, shorter, fewer); the start-screen key table overflowed at 720p (shortened, tighter
+rows); in clip frames the Reedcutter covered much of the Warden at sword's length, so the lock-on camera
+now rises 0.5 m and swings 0.55 m wider below about 3 m (`review/clip-4.png` shows the result);
+ambience level raised after the first measurement (−45 → about −37 dBFS RMS).
+
+### Assets
+
+No third-party assets were added. Geometry, skin, animation, UI and every sound are generated in
+code; the only bundled third-party code is still three.js (MIT, notice kept in `play.html`).
+
+### Problems that remain / not verified
+
+- **`notes/` was not deleted.** The brief asks for the reference folder to be removed when done;
+  the delete command was refused by this session's permission mode. It is untracked and unused
+  (nothing imports it): delete `games/sekiro/notes/` by hand.
+- Audio is unheard (see above). The gust-to-wind link is by construction (same function), not
+  measured against the picture.
+- The clip shows the 3D canvas only; the DOM HUD (bars, flask pips, callouts) is not in it.
+- The Reaping Cut is hard to land as a punish after a string (0.83 s minimum against 0.75–1.15 s
+  of boss recovery); it is easiest against a guarding or Unbalanced Warden. Jumping has little
+  combat use by design. Neither was tuned by a person playing.
+- At mid range (3–5 m) the Reedcutter can still overlap part of the Warden at some angles.
+- Hands have no separate fingers; cloth panels are hinged, not simulated; elbows and knees crease
+  with two-bone linear blending only.
+- The software renderer is still 14–18 fps (now at real-time speed, with 3–4 simulation steps per
+  frame, so input is sampled only 14–18 times a second there). Below 4 fps the 250 ms cap makes
+  the fight slow down again.
+- Tab-hidden auto-pause and `Esc`/button resume were not exercised by the suite (only `P`).
+- Audio across a retry (the context is reused and resumed) and the 80 % ambience step during the
+  fight are covered by code reading only, not by a check. The jump camera was looked at only in
+  the recorded clip (free and locked running jumps), not at the boundary.
+- `timing-*.json` were measured one build before the final one; the only later change is the
+  close-range camera offset (no simulation or loop change).
+- Hardware WebGL 2, Firefox and Safari were not run.

@@ -23,6 +23,28 @@ export const C = {
   INTRO_TIME: 2.2,
 };
 
+// ---- controls pass: jump, charged heavy cut (Reaping Cut) and the healing flask (Dew Gourd).
+// All tuning for the three lives in these blocks. Times in seconds, distances in metres.
+export const JUMP = {
+  TAKEOFF: 0.08, // grounded crouch before leaving the ground
+  V0: 6.4, G: 21, // peak ~0.98 m, ~0.61 s airborne
+  LAND: 0.14, // landing recovery before normal input returns
+  AIR_SPEED: 4.6, AIR_ACCEL: 9, // moderate air steering
+};
+export const CHARGE = {
+  COMMIT: 0.12, // attack still held this long after the press => the cut becomes a charge (before the light hit frame)
+  FULL: 0.65,// held this long after the press => fully charged; release from here on is a heavy cut
+  MOVE: 1.3, // walking speed while charging
+  HIT: 0.18, RECOVER: 0.85, DODGE_AFTER: 0.5, REACH: 3.2,
+  DMG: 18, DMG_BROKEN: 24, STANCE: 15, // against an open Warden (attacking, pinned, Unbalanced)
+  CHIP: 6, CHIP_STANCE: 11, // against the Warden's guard: beats it down, small chip, no riposte
+};
+export const FLASK = {
+  CHARGES: 3, HEAL: 38,
+  SIP: 0.7, // the single moment at which one charge is consumed and the heal applied
+  RECOVER: 0.35, MOVE: 1.4,
+};
+
 const S = (t, side, o = {}) => ({ t, side, type: 'slash', dmg: 12, gs: 16, ds: 9, reach: 3.1, arc: 0.3, lunge: 1.2, lt: 0.2, ...o });
 const HEAVY = (t, o = {}) => ({ t, side: 'O', type: 'heavy', dmg: 30, gs: 45, ds: 20, reach: 3.4, arc: 0.35, lunge: 2.2, lt: 0.25, ...o });
 const THRUST = (t, o = {}) => ({ t, side: 'T', type: 'thrust', dmg: 34, gs: 0, ds: 0, reach: 4.6, arc: 0.8, lunge: 3.8, lt: 0.22, cue: 0.9, ...o });
@@ -67,9 +89,9 @@ export function createSim(opts = {}) {
   function reset() {
     rand = rng(opts.seed || ((Math.random() * 1e9) | 0));
     s.mode = 'intro'; s.time = 0; s.modeT = 0; s.hitstop = 0; s.hitSeq = 0; s.chain = 0; s.promptOpen = false;
-    s.player = { x: 0, z: 5, face: Math.PI, hp: C.PLAYER_HP, stance: 0, state: 'idle', t: 0, combo: 0, guardHeld: false, pressT: -9, prevPress: -9, speed: 0, hitDone: false, queued: false, dx: 0, dz: 0, dodgeFwd: false, stanceIdle: 0, kx: 0, kz: 0, fAng: 0, lastDeflectT: -9 };
+    s.player = { x: 0, z: 5, face: Math.PI, hp: C.PLAYER_HP, stance: 0, state: 'idle', t: 0, combo: 0, guardHeld: false, pressT: -9, prevPress: -9, speed: 0, hitDone: false, queued: false, dx: 0, dz: 0, dodgeFwd: false, stanceIdle: 0, kx: 0, kz: 0, fAng: 0, lastDeflectT: -9, y: 0, vy: 0, jvx: 0, jvz: 0, flask: FLASK.CHARGES, drank: false, chargeFull: false };
     s.boss = { x: 0, z: -4, face: 0, hp: C.BOSS_HP, stance: 0, state: 'approach', t: 0, move: null, hitIdx: 0, phase: 1, bag: [], next: null, last: null, blockStreak: 0, cooldown: 1.2, stanceIdle: 0, strafe: 1, speed: 0, cueT: -9, movesSeen: { 1: [], 2: [] } };
-    s.stats = { swings: 0, hitsDealt: 0, blocked: 0, guards: 0, deflects: 0, maxChain: 0, counters: 0, breaks: 0, finishers: 0, hitsTaken: 0, evades: 0, dodges: 0, playerBreaks: 0, cues: 0 };
+    s.stats = { swings: 0, hitsDealt: 0, blocked: 0, guards: 0, deflects: 0, maxChain: 0, counters: 0, breaks: 0, finishers: 0, hitsTaken: 0, evades: 0, dodges: 0, playerBreaks: 0, cues: 0, jumps: 0, lands: 0, heavies: 0, heavyHits: 0, chargeFulls: 0, chargeBreaks: 0, drinks: 0, drinkFails: 0, drinkBreaks: 0, healed: 0 };
     s.events.length = 0;
     pickNext();
   }
@@ -104,20 +126,27 @@ export function createSim(opts = {}) {
     }
   }
 
-  function playerAttackHit() {
+  function playerAttackHit(heavy = false) {
     const p = s.player, b = s.boss;
     const dx = b.x - p.x, dz = b.z - p.z, d = Math.hypot(dx, dz);
     const dot = (Math.sin(p.face) * dx + Math.cos(p.face) * dz) / (d || 1);
-    if (d > C.ATTACK_REACH || dot < 0.3) return;
+    if (d > (heavy ? CHARGE.REACH : C.ATTACK_REACH) || dot < 0.3) return;
     const mx = (p.x + b.x) / 2, mz = (p.z + b.z) / 2;
     const open = b.state === 'broken' || b.state === 'pinned' || b.state === 'attack';
     if (b.state === 'finished' || b.state === 'phaseShift' || b.state === 'dying') return;
-    if (open || (b.state === 'approach' && rand() < 0.3)) {
-      const dmg = b.state === 'broken' ? 11 : 7;
+    if (open || (!heavy && b.state === 'approach' && rand() < 0.3)) {
+      const dmg = heavy ? (b.state === 'broken' ? CHARGE.DMG_BROKEN : CHARGE.DMG) : b.state === 'broken' ? 11 : 7;
       b.hp = Math.max(0, b.hp - dmg);
-      s.stats.hitsDealt++;
-      ev('hitBoss', { x: mx, z: mz });
-      addBossStance(b.hp <= 0 ? C.STANCE_MAX : 6 * (1 + (1 - b.hp / C.BOSS_HP) * 0.8));
+      s.stats.hitsDealt++; if (heavy) s.stats.heavyHits++;
+      ev('hitBoss', { x: mx, z: mz, heavy });
+      addBossStance(b.hp <= 0 ? C.STANCE_MAX : (heavy ? CHARGE.STANCE : 6) * (1 + (1 - b.hp / C.BOSS_HP) * 0.8));
+    } else if (heavy) {
+      // Reaping Cut on a raised guard: the guard is beaten down (chip + Balance), no riposte follows
+      b.hp = Math.max(1, b.hp - CHARGE.CHIP);
+      s.stats.blocked++; s.stats.heavyHits++;
+      ev('bossBlock', { x: mx, z: mz, heavy: true });
+      addBossStance(CHARGE.CHIP_STANCE);
+      if (b.state !== 'broken') { b.state = 'block'; b.t = 0; }
     } else {
       s.stats.blocked++; b.blockStreak++;
       ev('bossBlock', { x: mx, z: mz });
@@ -142,6 +171,10 @@ export function createSim(opts = {}) {
 
   function hurtPlayer(h, dirx, dirz) {
     const p = s.player;
+    // a blow interrupts a charge (no cut comes out) and a drink before the sip (nothing consumed, nothing healed)
+    if (p.state === 'charge' || (p.state === 'heavy' && !p.hitDone)) { s.stats.chargeBreaks++; ev('chargeBreak', {}); }
+    if (p.state === 'drink' && !p.drank) { s.stats.drinkBreaks++; ev('drinkBreak', {}); }
+    p.chargeFull = false;
     p.hp = Math.max(0, p.hp - h.dmg * hurt);
     s.stats.hitsTaken++; s.chain = 0;
     ev('hitPlayer', { x: p.x, z: p.z, heavy: h.type !== 'slash' });
@@ -228,11 +261,24 @@ export function createSim(opts = {}) {
       ev('finisherStart', { n: b.phase });
     };
 
+    const walk = (sp) => { if (ml > 0.1) { mvx = inp.mx / Math.max(1, ml) * sp; mvz = inp.mz / Math.max(1, ml) * sp; } };
+    const tryDrink = () => {
+      if (p.flask <= 0 || p.hp >= C.PLAYER_HP) { s.stats.drinkFails++; ev('drinkFail', { empty: p.flask <= 0 }); return false; }
+      p.state = 'drink'; p.t = 0; p.drank = false; ev('drinkStart', {});
+      return true;
+    };
+
     switch (p.state) {
       case 'idle':
       case 'guard': {
         if (s.promptOpen && (inp.finisher || inp.attack)) { startFinisher(); break; }
         if (inp.dodge) { startDodge(); break; }
+        if (inp.jump) {
+          p.state = 'takeoff'; p.t = 0; s.stats.jumps++; ev('jump', {});
+          p.jvx = ml > 0.1 ? inp.mx / Math.max(1, ml) * C.MOVE_SPEED : 0; p.jvz = ml > 0.1 ? inp.mz / Math.max(1, ml) * C.MOVE_SPEED : 0;
+          break;
+        }
+        if (inp.drink && tryDrink()) break;
         if (inp.attack) { startAttack(0); break; }
         p.state = p.guardHeld ? 'guard' : 'idle';
         const sp = p.state === 'guard' ? C.GUARD_SPEED : C.MOVE_SPEED;
@@ -244,6 +290,8 @@ export function createSim(opts = {}) {
       case 'attack': {
         if (s.promptOpen && inp.finisher) { startFinisher(); break; }
         if (inp.attack && p.t > 0.08) p.queued = true;
+        // still held just before the hit frame: this input becomes a charge and the light cut never lands
+        if (!p.hitDone && p.t >= CHARGE.COMMIT && inp.attackHeld) { p.state = 'charge'; p.chargeFull = false; p.queued = false; ev('chargeStart', {}); break; }
         if (p.t < 0.2) { mvx = Math.sin(p.face) * 2.5; mvz = Math.cos(p.face) * 2.5; }
         if (!p.hitDone && p.t >= 0.16) { p.hitDone = true; playerAttackHit(); }
         if (p.state !== 'attack') break;
@@ -253,8 +301,62 @@ export function createSim(opts = {}) {
         if (p.t >= 0.5) p.state = 'idle';
         break;
       }
+      case 'charge': { // p.t keeps counting from the press
+        walk(CHARGE.MOVE);
+        p.face = turnTo(p.face, toB, 10 * dt);
+        if (!p.chargeFull && p.t >= CHARGE.FULL) { p.chargeFull = true; s.stats.chargeFulls++; ev('chargeFull', {}); }
+        if (inp.dodge) { p.chargeFull = false; startDodge(); break; } // stepping or guarding abandons the charge
+        if (inp.guardPress) { p.chargeFull = false; p.state = 'guard'; break; }
+        if (!inp.attackHeld) {
+          if (p.chargeFull) { p.state = 'heavy'; p.t = 0; p.hitDone = false; p.chargeFull = false; s.stats.heavies++; ev('heavySwing', {}); }
+          else { p.state = 'attack'; p.t = CHARGE.COMMIT; } // let go early: the ordinary cut goes through
+        }
+        break;
+      }
+      case 'heavy': { // release -> hit -> recovery
+        if (p.t < CHARGE.HIT) { mvx = Math.sin(p.face) * 4; mvz = Math.cos(p.face) * 4; }
+        if (!p.hitDone && p.t >= CHARGE.HIT) { p.hitDone = true; playerAttackHit(true); }
+        if (p.state !== 'heavy') break;
+        if (p.t > CHARGE.DODGE_AFTER && inp.dodge) { startDodge(); break; }
+        if (p.t >= CHARGE.RECOVER) p.state = 'idle';
+        break;
+      }
+      case 'takeoff': {
+        mvx = p.jvx * 0.6; mvz = p.jvz * 0.6;
+        if (p.t >= JUMP.TAKEOFF) { p.state = 'air'; p.t = 0; p.vy = JUMP.V0; p.y = 0.001; }
+        break;
+      }
+      case 'air': {
+        if (ml > 0.1) { // moderate steering toward the held direction
+          const tx = inp.mx / Math.max(1, ml) * JUMP.AIR_SPEED, tz = inp.mz / Math.max(1, ml) * JUMP.AIR_SPEED;
+          const ex = tx - p.jvx, ez = tz - p.jvz, el = Math.hypot(ex, ez), st = Math.min(el, JUMP.AIR_ACCEL * dt);
+          if (el > 1e-6) { p.jvx += ex / el * st; p.jvz += ez / el * st; }
+        }
+        mvx = p.jvx; mvz = p.jvz;
+        if (inp.locked) p.face = turnTo(p.face, toB, 8 * dt);
+        else if (Math.hypot(p.jvx, p.jvz) > 0.5) p.face = turnTo(p.face, Math.atan2(p.jvx, p.jvz), 8 * dt);
+        break;
+      }
+      case 'land': {
+        walk(C.MOVE_SPEED * 0.35);
+        if (p.t >= JUMP.LAND) p.state = 'idle';
+        break;
+      }
+      case 'drink': {
+        walk(FLASK.MOVE);
+        if (inp.locked) p.face = turnTo(p.face, toB, 8 * dt);
+        if (!p.drank && p.t >= FLASK.SIP) {
+          // the one moment: charge consumed and heal applied together
+          p.drank = true; p.flask--;
+          const before = p.hp; p.hp = Math.min(C.PLAYER_HP, p.hp + FLASK.HEAL);
+          s.stats.drinks++; s.stats.healed += p.hp - before;
+          ev('heal', { amount: p.hp - before, left: p.flask });
+        }
+        if (p.t >= FLASK.SIP + FLASK.RECOVER) p.state = 'idle';
+        break;
+      }
       case 'dodge': {
-        const v = (C.DODGE_DIST / C.DODGE_TIME) * (p.t < 0.3 ? 1.25 : 0.25);
+        const v =(C.DODGE_DIST / C.DODGE_TIME) * (p.t < 0.3 ? 1.25 : 0.25);
         if (!(p.dodgeFwd && dist < 1.7)) { mvx = p.dx * v; mvz = p.dz * v; }
         if (p.t >= C.DODGE_TIME) p.state = 'idle';
         break;
@@ -289,6 +391,14 @@ export function createSim(opts = {}) {
       const f = Math.exp(-dt * 9); p.kx *= f; p.kz *= f;
     }
     if (p.state !== 'finisher') { p.x += mvx * dt; p.z += mvz * dt; }
+    // gravity: whatever state the fighter is in, the ground holds
+    if (p.y > 0 || p.vy > 0) {
+      p.vy -= JUMP.G * dt; p.y += p.vy * dt;
+      if (p.y <= 0) {
+        p.y = 0; p.vy = 0;
+        if (p.state === 'air') { p.state = 'land'; p.t = 0; s.stats.lands++; ev('land', {}); }
+      }
+    }
     p.speed = (p.state === 'idle' || p.state === 'guard') ? Math.hypot(mvx, mvz) : 0;
     // stance recovery
     p.stanceIdle += dt;
@@ -377,7 +487,15 @@ export function createSim(opts = {}) {
     if (s.player.state === 'dead' && s.player.t >= 1.5) { s.mode = 'defeat'; s.modeT = 0; ev('defeat', {}); }
   }
 
-  s.reset = reset; s.step = step;
+  // Pause / window blur: drop any charge, jump or unfinished drink so nothing fires or lingers on return.
+  function clearActions() {
+    const p = s.player;
+    if (['charge', 'drink', 'takeoff', 'air', 'land'].includes(p.state) || (p.state === 'heavy' && !p.hitDone)) { p.state = 'idle'; p.t = 0; }
+    if (p.state !== 'dead') { p.y = 0; p.vy = 0; }
+    p.jvx = p.jvz = 0; p.queued = false; p.chargeFull = false; p.drank = false;
+  }
+
+  s.reset = reset; s.step = step; s.clearActions = clearActions;
   reset();
   return s;
 }

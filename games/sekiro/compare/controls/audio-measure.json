@@ -1,0 +1,119 @@
+{
+  "note": "Measured by tests/record-clip.mjs from PCM captured inside the page. Nobody listened to this audio.",
+  "browser": "Chrome (channel) with WebGPU flags",
+  "backend": "WebGPU",
+  "ambience": {
+    "what": "ambience bus alone (drizzle curtain, reed wind, drops, insects), after ducking, scaled by the master gain 0.7; before the master compressor",
+    "bus": "amb",
+    "seconds": 20.14,
+    "rate": 48000,
+    "samples": 966656,
+    "peak": 0.1467,
+    "peakDb": -16.7,
+    "rms": 0.01468,
+    "rmsDb": -36.7,
+    "clipped": 0,
+    "windowMs": 85,
+    "winRmsDb": {
+      "min": -53.2,
+      "p10": -46.9,
+      "p50": -38.4,
+      "p90": -33.2,
+      "max": -28.2
+    },
+    "dropsScheduled": 42
+  },
+  "mix": {
+    "what": "final output after the master compressor during the recorded fight (ambience + footsteps + blade, cue and flask sounds + music)",
+    "bus": "mix",
+    "seconds": 26.11,
+    "rate": 48000,
+    "samples": 1253376,
+    "peak": 0.5212,
+    "peakDb": -5.7,
+    "rms": 0.03653,
+    "rmsDb": -28.7,
+    "clipped": 0,
+    "windowMs": 85,
+    "winRmsDb": {
+      "min": -48.1,
+      "p10": -38.6,
+      "p50": -33.5,
+      "p90": -25.4,
+      "max": -17
+    }
+  },
+  "clip": {
+    "file": "gameplay.webm",
+    "bytes": 4713730,
+    "recorder": {
+      "type": "video/webm;codecs=vp9,opus",
+      "audioTracks": 1,
+      "videoTracks": 1
+    },
+    "stats": {
+      "jumps": 1,
+      "heavies": 1,
+      "heavyHits": 1,
+      "drinks": 1,
+      "hitsTaken": 11,
+      "guards": 2,
+      "deflects": 0
+    },
+    "decoded": {
+      "seconds": 29.34,
+      "channels": 2,
+      "rate": 48000,
+      "peak": 0.5282,
+      "peakDb": -5.5,
+      "rmsDb": -28.1,
+      "windows100ms": 294,
+      "windowsAboveMinus60dB": 294
+    },
+    "video": {
+      "seconds": 29.32,
+      "width": 1280,
+      "height": 720,
+      "frames": 6
+    }
+  },
+  "muted": {
+    "bus": "mix",
+    "seconds": 1.45,
+    "rate": 48000,
+    "samples": 69632,
+    "peak": 0,
+    "peakDb": null,
+    "rms": 0,
+    "rmsDb": null,
+    "clipped": 0,
+    "windowMs": 85,
+    "winRmsDb": {
+      "min": null,
+      "p10": null,
+      "p50": null,
+      "p90": null,
+      "max": null
+    }
+  },
+  "paused": {
+    "contextState": "suspended",
+    "bus": "mix",
+    "seconds": 0,
+    "rate": 48000,
+    "samples": 0,
+    "peak": 0,
+    "peakDb": null,
+    "rms": 0,
+    "rmsDb": null,
+    "clipped": 0,
+    "windowMs": 85,
+    "winRmsDb": {
+      "min": null,
+      "p10": null,
+      "p50": null,
+      "p90": null,
+      "max": null
+    }
+  }
+}
