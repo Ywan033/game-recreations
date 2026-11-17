@@ -8,6 +8,7 @@
 
 <!-- online-play:start -->
 - **雨巷双刃 (Rainlane Blades)**: [▶ 在线试玩](https://ywan033.github.io/game-recreations/play/rainlane-blades.html)
+- **苇月剑决 (Reedmoon Duel)**: 待上线
 <!-- online-play:end -->
 
 每款通过离线验收后，同一个已验证的 HTML 会发布到 GitHub Pages（`docs/play/`），并在无登录的浏览器中验证实际网址后才在此处给出链接。需要桌面浏览器、键盘和鼠标。
