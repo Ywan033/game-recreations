@@ -295,7 +295,7 @@ state probe, and the existing tests working. Keep all changes inside that
 game directory. Do not commit, push, publish, or request intermediate
 reviews.
 "@
-        if (Test-Path -LiteralPath (Join-Path (Join-Path $trees $id) "games$idcompareefore-title.png") -PathType Leaf) {
+        if (Test-Path -LiteralPath (Join-Path (Join-Path $trees $id) "games\$id\compare\before-title.png") -PathType Leaf) {
             $head += @"
 
 An earlier session of this upgrade was interrupted before it finished. The
@@ -379,7 +379,7 @@ function Invoke-Session {
     $limitReset = $null
     if (Test-Path -LiteralPath $OutFile) {
         foreach ($line in [System.IO.File]::ReadLines($OutFile, $utf8)) {
-            if ($line.Contains('"status":"rejected"') -and $line -match '"resetsAt":(d{10})') { $limitReset = [long]$Matches[1] }
+            if ($line.Contains('"status":"rejected"') -and $line -match '"resetsAt":(\d{10})') { $limitReset = [long]$Matches[1] }
             # Key order in the result object is not fixed; match on content.
             if ($line.StartsWith('{') -and $line.Contains('"type":"result"') -and $line.Contains('"total_cost_usd"')) { $resultLine = $line }
         }
@@ -396,7 +396,7 @@ function Invoke-Session {
     $errText = ''
     if (Test-Path -LiteralPath $ErrFile) { $errText = Read-Utf8 $ErrFile }
     $probe = "$($res.Text)`n$errText"
-    if (($res.IsError -or $res.ExitCode -ne 0) -and $probe -match '(?i)usage limit|rate limit|limit reached|hit your [w- ]{0,20}limit|out of extra usage') {
+    if (($res.IsError -or $res.ExitCode -ne 0) -and $probe -match '(?i)usage limit|rate limit|limit reached|hit your [\w\- ]{0,20}limit|out of extra usage') {
         $res.Limit = $true
         if ($limitReset) {
             $res.ResetAt = [DateTimeOffset]::FromUnixTimeSeconds($limitReset).LocalDateTime
