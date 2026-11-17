@@ -128,7 +128,7 @@ function Write-Readme-Online {
     $b = $text.IndexOf('<!-- online-play:end -->')
     if ($a -lt 0 -or $b -lt $a) { return }
     $lines = @()
-    foreach ($job in $queue) {
+    foreach ($job in $allJobs) {
         $s = Get-State $job.id
         $lines += "- **$($job.title) ($($job.titleEn))**: $(Get-OnlineText $s $labels)"
     }
@@ -210,7 +210,7 @@ function Write-Progress-File {
     $cols = @($labels.columns) + @($labels.onlineColumn)
     [void]$sb.Append("`n| " + ($cols -join ' | ') + " |`n")
     [void]$sb.Append('|' + (' --- |' * $cols.Count) + "`n")
-    foreach ($job in $queue) {
+    foreach ($job in $allJobs) {
         $s = Get-State $job.id
         $key = $s.status
         if ($key -eq 'delivered' -and $s.push -ne 'pushed') { $key = 'deliveredPendingPush' }
@@ -471,12 +471,13 @@ function Invoke-Milestone {
 function Sync-Progress {
     param([string]$Message)
     Write-Progress-File
+    Write-Readme-Online
     $branch = "$((Invoke-Git $repo @('branch', '--show-current')).Out[0])".Trim()
     if ($branch -ne 'main') { Write-Log "[GIT] Main repo is on '$branch', not main; PROGRESS.md left uncommitted"; return }
-    Invoke-Git $repo @('add', '--', 'PROGRESS.md') | Out-Null
-    $diff = Invoke-Git $repo @('diff', '--cached', '--quiet', '--', 'PROGRESS.md')
+    Invoke-Git $repo @('add', '--', 'PROGRESS.md', 'README.md') | Out-Null
+    $diff = Invoke-Git $repo @('diff', '--cached', '--quiet', '--', 'PROGRESS.md', 'README.md')
     if ($diff.Code -ne 0) {
-        $r = Invoke-Git $repo @('commit', '-q', '-m', $Message, '--', 'PROGRESS.md')
+        $r = Invoke-Git $repo @('commit', '-q', '-m', $Message, '--', 'PROGRESS.md', 'README.md')
         if ($r.Code -ne 0) { Write-Log "[GIT] PROGRESS.md commit failed: $($r.Out -join ' ')"; return }
     }
     if ($NoPush) { return }
@@ -492,6 +493,7 @@ $queuePath = Join-Path $repo 'tasks\queue.json'
 # PowerShell 5.1 emits a JSON array as one object; assign first, then enumerate.
 $parsedQueue = Read-Utf8 $queuePath | ConvertFrom-Json
 $queue = @($parsedQueue | ForEach-Object { $_ })
+$allJobs = $queue   # documents always list every game, even with -Only
 if ($Only) { $queue = @($queue | Where-Object { $_.id -eq $Only }) }
 if ($queue.Count -eq 0) { throw 'The game queue is empty.' }
 
