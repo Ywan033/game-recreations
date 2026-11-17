@@ -295,6 +295,16 @@ state probe, and the existing tests working. Keep all changes inside that
 game directory. Do not commit, push, publish, or request intermediate
 reviews.
 "@
+        if (Test-Path -LiteralPath (Join-Path (Join-Path $trees $id) "games$idcompareefore-title.png") -PathType Leaf) {
+            $head += @"
+
+An earlier session of this upgrade was interrupted before it finished. The
+compare/before-*.png screenshots already exist and show the version before
+the upgrade: do not regenerate or overwrite them. Review what is already
+done on disk against every item of the brief, finish what is missing,
+re-verify, re-capture the after-* screenshots, and write the report section.
+"@
+        }
     } elseif ($Mode -eq 'generate') {
         $head = @"
 Implement this game autonomously in games/$id in the current worktree.
@@ -366,8 +376,10 @@ function Invoke-Session {
     $res = @{ ExitCode = -1; Cost = $null; IsError = $true; Text = ''; TimedOut = $timedOut; Limit = $false; ResetAt = $null }
     if (-not $timedOut) { $res.ExitCode = $p.ExitCode }
     $resultLine = $null
+    $limitReset = $null
     if (Test-Path -LiteralPath $OutFile) {
         foreach ($line in [System.IO.File]::ReadLines($OutFile, $utf8)) {
+            if ($line.Contains('"status":"rejected"') -and $line -match '"resetsAt":(d{10})') { $limitReset = [long]$Matches[1] }
             # Key order in the result object is not fixed; match on content.
             if ($line.StartsWith('{') -and $line.Contains('"type":"result"') -and $line.Contains('"total_cost_usd"')) { $resultLine = $line }
         }
@@ -378,14 +390,17 @@ function Invoke-Session {
             if ($null -ne $obj.total_cost_usd) { $res.Cost = [double]$obj.total_cost_usd }
             $res.IsError = [bool]$obj.is_error
             $res.Text = "$($obj.subtype) $($obj.result)"
+            if ("$($obj.api_error)" -eq 'usage_limit_reached') { $res.Text += ' usage limit reached' }
         } catch { }
     }
     $errText = ''
     if (Test-Path -LiteralPath $ErrFile) { $errText = Read-Utf8 $ErrFile }
     $probe = "$($res.Text)`n$errText"
-    if (($res.IsError -or $res.ExitCode -ne 0) -and $probe -match '(?i)usage limit|rate limit|limit reached|hit your limit|out of extra usage') {
+    if (($res.IsError -or $res.ExitCode -ne 0) -and $probe -match '(?i)usage limit|rate limit|limit reached|hit your [w- ]{0,20}limit|out of extra usage') {
         $res.Limit = $true
-        if ($probe -match '\|(\d{10})\b') {
+        if ($limitReset) {
+            $res.ResetAt = [DateTimeOffset]::FromUnixTimeSeconds($limitReset).LocalDateTime
+        } elseif ($probe -match '\|(\d{10})\b') {
             $res.ResetAt = [DateTimeOffset]::FromUnixTimeSeconds([long]$Matches[1]).LocalDateTime
         } elseif ($probe -match '(?i)resets?\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)') {
             $h = [int]$Matches[1] % 12

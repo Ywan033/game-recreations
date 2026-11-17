@@ -90,3 +90,22 @@ script with the same seed and camera steps to write
   the before/after comparison images, which render paths were verified, the
   `play.html` size before and after, and the problems that remain. Update
   README.md where it describes the look or the files.
+
+## 4. Low-end performance (found after the first, interrupted attempt)
+
+The published-page check (`tests/online-check.cjs`, run in a plain headless
+Chromium without a hardware GPU) failed on the upgraded build: the page
+loaded, but the game ran at about 2 fps and was still in `intro` when the
+check timed out. The same check passed on the previous version.
+
+- Reproduce with `tests/run-online-check.mjs` against the built file in the
+  same kind of browser, and measure the frame rate on the software paths
+  (WebGPU and WebGL 2).
+- Find what made the new look so much heavier (reed count, shadow passes,
+  shader cost, per-frame geometry updates) and fix it. Add automatic
+  quality scaling when the measured frame rate is low, so weak machines get
+  a lighter but still correct picture and the fight stays playable.
+- Game time must not stall the intro on slow frames: the check has to reach
+  the fight and accept input within its existing timeouts. Do not loosen
+  the timeouts to hide the slowdown.
+- Record the measured frame rates before and after in DELIVERY.md.
