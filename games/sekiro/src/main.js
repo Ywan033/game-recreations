@@ -3,7 +3,7 @@ import * as THREE from 'three/webgpu';
 import './style.css';
 import { createSim, C, MOVES } from './sim.js';
 import { buildWorld } from './world.js';
-import { Figure, playerPose, bossPose } from './figure.js';
+import { Figure, playerPose, bossPose, POSE_NAMES } from './figure.js';
 import { Fx } from './fx.js';
 import { Sound } from './audio.js';
 
@@ -34,23 +34,38 @@ const backend = renderer.backend && renderer.backend.isWebGPUBackend ? 'WebGPU' 
 renderer.setPixelRatio(low ? 1 : Math.min(window.devicePixelRatio || 1, 1.5));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.15;
+renderer.toneMappingExposure = 1.3;
 renderer.shadowMap.enabled = !low;
 $('view').appendChild(renderer.domElement);
 $('backend').textContent = backend + (low ? ' · low' : '');
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x0a1820);
+scene.background = new THREE.Color(0x070b10);
 const camera = new THREE.PerspectiveCamera(52, window.innerWidth / window.innerHeight, 0.1, 600);
 const world = buildWorld(scene, low);
 const fx = new Fx(scene);
 
-const player = new Figure({ kind: 'player', scale: 1, cloth: 0x394a55, cloth2: 0x232c33, skin: 0xd9b48f, trim: 0xe0662e, trimGlow: 0.55, blade: 0.95, bladeColor: 0xe8eef0, bladeGlow: 0xffc890, trail: 0xffd9a0 });
-const boss = new Figure({ kind: 'boss', scale: 1.22, cloth: 0x2a2552, cloth2: 0x191736, skin: 0x1a1a22, trim: 0x39e0c8, trimGlow: 1.2, hat: 0xb9a878, mask: 0xf2ead8, blade: 1.3, bladeColor: 0xd0e4ea, bladeGlow: 0x60e0d0, trail: 0x8ff0e0 });
+// Muted, layered clothing: slate robe over a pale under-robe for the Reedcutter; dark robe, thatch
+// mantle and hat, bone mask for the Warden.
+const PLAYER_STYLE = { kind: 'player', scale: 1, robe: 0x4a4d50, under: 0xa39d8e, collar: 0x2c3034, trouser: 0x2a2b2c, sash: 0x7a4630, leather: 0x4a3626, wrap: 0x6f6b5e, shoe: 0x3a372f, skin: 0xb89070, straw: 0x6e6242, blade: 0.82, bladeW: 0.034, curve: 0.02, hilt: 0.27, grip: 0x2a2622, bladeColor: 0xdfe6ea, bladeGlow: 0x9fb4c8, trail: 0xdfe8f2 };
+const BOSS_STYLE = { kind: 'boss', scale: 1.15, robe: 0x302e38, under: 0x626066, collar: 0x16151c, trouser: 0x1c1b21, sash: 0x345750, leather: 0x2d2c2e, wrap: 0x3e3c38, shoe: 0x242321, skin: 0x8a7460, straw: 0x6f6545, cloak: 0x232228, mask: 0xa9a391, eye: 0x3f8f84, blade: 1.22, bladeW: 0.04, curve: 0.045, hilt: 0.36, grip: 0x1c2a2a, bladeColor: 0xd6e2e8, bladeGlow: 0x8fa8c0, trail: 0xd4e6ee };
+const player = new Figure(PLAYER_STYLE);
+const boss = new Figure(BOSS_STYLE);
 scene.add(player.root, boss.root, player.trail, boss.trail);
-// soft markers under each fighter keep them readable against grass and mist
-const mark = (c) => { const m = new THREE.Mesh(new THREE.RingGeometry(0.5, 0.62, 28), new THREE.MeshBasicMaterial({ color: c, transparent: true, opacity: 0.5, depthWrite: false, fog: false })); m.rotation.x = -Math.PI / 2; m.position.y = 0.03; scene.add(m); return m; };
-const pMark = mark(0xffb070), bMark = mark(0x49e6d0);
+// faint ground rings: barely there in normal play, bright only while the Warden is Unbalanced
+const mark = (c, o) => { const m = new THREE.Mesh(new THREE.RingGeometry(0.52, 0.6, 32), new THREE.MeshBasicMaterial({ color: c, transparent: true, opacity: o, depthWrite: false, fog: false })); m.rotation.x = -Math.PI / 2; m.position.y = 0.03; scene.add(m); return m; };
+const pMark = mark(0xcfd8e4, 0.1), bMark = mark(0x8fd8cc, 0.14);
+
+// Dev option #gallery=player|boss[&gy=<yaw>]: every pose side by side, for checking silhouettes.
+const gallery = opt.get('gallery');
+let galFigs = null;
+if (gallery) {
+  const gy = num('gy') ?? 0.7;
+  const page = num('gp') ?? 0;
+  galFigs = POSE_NAMES.slice(page * 10, page * 10 + 10).map((n, i) => { const f = new Figure(gallery === 'boss' ? BOSS_STYLE : PLAYER_STYLE); scene.add(f.root); return { f, n, x: (i - 4.5) * 1.3, z: 0, gy }; });
+  player.root.visible = boss.root.visible = pMark.visible = bMark.visible = false;
+  $('title').classList.add('hidden');
+}
 
 // ---------------------------------------------------------------- input
 let started = false;
@@ -71,7 +86,6 @@ function begin() {
   sim.reset(); started = true;
   for (const k in edge) edge[k] = false;
   if (!cam.lock) toggleLock();
-  cam.pos.set(7, 5, 15);
   $('title').classList.add('hidden'); $('result').classList.add('hidden'); $('hud').classList.remove('hidden');
   $('bars').classList.remove('on'); $('danger').classList.remove('on');
   setPhaseUI(1);
@@ -163,18 +177,20 @@ function handle(e) {
     case 'swing': sound.play('swing'); break;
     case 'bossSwing': sound.play('bossSwing'); break;
     case 'dodge': sound.play('dodge'); break;
-    case 'hitBoss': sound.play('hitBoss'); fx.burst(e.x, y, e.z, 10, 0x9ff0e0, 5); cam.shake = Math.max(cam.shake, 0.08); break;
-    case 'bossBlock': sound.play('bossBlock'); fx.burst(e.x, y, e.z, 6, 0xb0c8d0, 4); break;
-    case 'bossDeflect': callout('被拨开', 'Turned aside', 'bad'); break;
-    case 'guard': sound.play('guard'); fx.burst(e.x, y, e.z, 8, 0xd0703a, 3.5, { life: 0.3 }); cam.shake = Math.max(cam.shake, 0.12); break;
+    case 'hitBoss': sound.play('hitBoss'); fx.burst(e.x, y, e.z, 10, 0x9ff0e0, 5); cam.shake = Math.max(cam.shake, 0.08); boss.kick(0.55, 0.2); break;
+    case 'bossBlock': sound.play('bossBlock'); fx.burst(e.x, y, e.z, 6, 0xb0c8d0, 4); boss.kick(0.3, 0.3); player.kick(0.25, -0.5); break;
+    case 'bossDeflect': callout('被拨开', 'Turned aside', 'bad'); player.kick(0.7, -1); break;
+    case 'guard': sound.play('guard'); fx.burst(e.x, y, e.z, 8, 0xd0703a, 3.5, { life: 0.3 }); cam.shake = Math.max(cam.shake, 0.12); player.kick(0.95, 0.3); boss.kick(0.2); break;
     case 'deflect':
       sound.play('deflect', e.chain);
+      // sharp beat: the Reedcutter's blade snaps out and rebounds, the Warden's is thrown wide
+      player.kick(e.heavy ? 0.65 : 0.4); boss.kick(e.heavy ? 1.1 : 0.75, (e.chain % 2 ? 1 : -1) * 1.15);
       fx.burst(e.x, y, e.z, e.heavy ? 34 : 22, 0xfff0b0, 9, { up: true }); fx.burst(e.x, y, e.z, 8, 0xffffff, 4);
       fx.ring(e.x, y, e.z, 0xfff3c4, 0.15, 1.5, 0.28, false, camera); fx.flash(e.x, y, e.z, 0xffe9b0, 30, 0.2);
       cam.shake = Math.max(cam.shake, e.heavy ? 0.2 : 0.1);
       callout(e.chain > 1 ? `拨锋 ×${e.chain}` : '拨锋', e.chain > 1 ? `Glance chain ${e.chain}` : 'Glance', 'glance');
       break;
-    case 'hitPlayer': sound.play('hitPlayer'); fx.burst(e.x, y, e.z, 16, 0xff5a40, 5); cam.shake = Math.max(cam.shake, e.heavy ? 0.4 : 0.22); break;
+    case 'hitPlayer': sound.play('hitPlayer'); fx.burst(e.x, y, e.z, 16, 0xff5a40, 5); cam.shake = Math.max(cam.shake, e.heavy ? 0.4 : 0.22); player.kick(e.heavy ? 1.3 : 0.8, 0.4); break;
     case 'playerBroken': sound.play('playerBroken'); callout('重心尽失', 'Your Balance gives way', 'bad'); break;
     case 'cue':
       sound.play('cue'); callout('紫焰', 'Violet flare — step in!', 'warn');
@@ -187,15 +203,15 @@ function handle(e) {
       sound.play('counter'); callout('踏锁', 'Bind-Step', 'bind');
       fx.ring(e.x, 0.06, e.z, 0x8fefff, 0.3, 4.2, 0.55, true); fx.ring(e.x, 0.06, e.z, 0xb070ff, 0.2, 2.6, 0.4, true);
       fx.burst(e.x, 0.2, e.z, 30, 0x9fefff, 6, { up: true, lift: 4, g: 5, life: 0.7 }); fx.flash(e.x, 0.8, e.z, 0x80e8ff, 45, 0.35);
-      cam.shake = Math.max(cam.shake, 0.35);
+      cam.shake = Math.max(cam.shake, 0.35); boss.kick(0.6);
       break;
-    case 'break': sound.play('break'); callout('失衡', 'Unbalanced', 'wheel'); fx.ring(e.x, 1.2, e.z, 0xffe9a0, 0.3, 3.4, 0.6, false, camera); fx.burst(e.x, 1.3, e.z, 26, 0xffe9a0, 6); break;
+    case 'break': boss.kick(1.1, 0.5); sound.play('break'); callout('失衡', 'Unbalanced', 'wheel'); fx.ring(e.x, 1.2, e.z, 0xffe9a0, 0.3, 3.4, 0.6, false, camera); fx.burst(e.x, 1.3, e.z, 26, 0xffe9a0, 6); break;
     case 'finisherStart': sound.play('finisherStart'); break;
     case 'finisherHit':
       sound.play('finisherHit'); callout('月轮', 'Moonwheel', 'wheel'); flash();
       fx.sweep(e.x, 1.2, e.z, player.root.rotation.y); fx.burst(e.x, 1.3, e.z, 60, 0xffe2b0, 10, { up: true, lift: 3, life: 0.9 });
       fx.ring(e.x, 0.06, e.z, 0xffd9a0, 0.4, 6, 0.8, true); fx.flash(e.x, 1.4, e.z, 0xfff0d0, 80, 0.6);
-      cam.shake = Math.max(cam.shake, 0.5);
+      cam.shake = Math.max(cam.shake, 0.5); boss.kick(1.3);
       break;
     case 'phase2':
       sound.play('phase2'); sound.phase = 2; setPhaseUI(2);
@@ -213,8 +229,12 @@ function updateCamera(dt, t) {
   const p = sim.player, b = sim.boss;
   const want = v1, look = v2;
   let rate = 8;
-  if (!started) {
-    want.set(Math.sin(t * 0.07) * 8.5, 2.6, Math.cos(t * 0.07) * 8.5); look.set(0, 1.4, 0); rate = 2;
+  if (galFigs) {
+    want.set(0, 1.9, 8.2); look.set(0, 0.95, 0); rate = 50;
+  } else if (!started) {
+    // composed title view: both fighters and the moon sit in the left half, clear of the text panel
+    const sway = Math.sin(t * 0.11) * 0.3;
+    want.set(3.6 + sway, 1.55, 9.6); look.set(1.5 + sway * 0.6, 1.3, -0.2); rate = 2;
   } else if (p.state === 'finisher' || b.state === 'phaseShift' || b.state === 'dying') {
     const dx = p.x - b.x, dz = p.z - b.z, d = Math.hypot(dx, dz) || 1;
     const ps = b.state === 'phaseShift', side = ps ? 0.35 : 1, fwd = ps ? 6 : 1.2;
@@ -248,7 +268,7 @@ function updateCamera(dt, t) {
 }
 
 // ---------------------------------------------------------------- frame loop
-const violet = new THREE.Color(0xc040ff), amber = new THREE.Color(0xffa040), teal = new THREE.Color(0x60e0d0);
+const violet = new THREE.Color(0xc040ff), amber = new THREE.Color(0xffa040), teal = new THREE.Color(BOSS_STYLE.bladeGlow);
 let lastT = performance.now(), acc = 0, frames = 0, fps = 0, fpsAcc = 0, fpsN = 0, wall = 0;
 function frame() {
   const now = performance.now();
@@ -271,14 +291,16 @@ function frame() {
   const still = sim.hitstop > 0 ? 0 : dt;
   player.update(still, p.x, p.z, p.face, pp, pr, pe);
   boss.update(still, b.x, b.z, b.face, bp, br, be);
+  if (galFigs) for (const g of galFigs) g.f.update(dt, g.x, g.z, g.gy, g.f.poses[g.n], 10);
   pMark.position.set(p.x, 0.03, p.z); bMark.position.set(b.x, 0.03, b.z);
   // blade tells: violet for the unguardable lunge, amber while a heavy blow is raised
   const h = sim.nextHit();
   const m = boss.bladeMat;
-  if (h && h.type === 'thrust' && h.inT <= MOVES[b.move].hits[h.idx].cue) { m.emissive.copy(violet); m.emissiveIntensity = 5 + Math.sin(wall * 40) * 2; }
-  else if (h && h.type === 'heavy') { m.emissive.copy(amber); m.emissiveIntensity = 1.6; }
-  else { m.emissive.copy(teal); m.emissiveIntensity = 0.35; }
-  bMark.material.color.set(b.state === 'broken' ? 0xfff0a0 : 0x49e6d0); bMark.scale.setScalar(b.state === 'broken' ? 1.5 + Math.sin(wall * 8) * 0.15 : 1.25);
+  if (h && h.type === 'thrust' && h.inT <= MOVES[b.move].hits[h.idx].cue) { m.emissive.copy(violet); m.emissiveIntensity = 4.5 + Math.sin(wall * 40) * 1.8; }
+  else if (h && h.type === 'heavy') { m.emissive.copy(amber); m.emissiveIntensity = 1.1; }
+  else { m.emissive.copy(teal); m.emissiveIntensity = 0.3; }
+  const broken = b.state === 'broken';
+  bMark.material.color.set(broken ? 0xfff0a0 : 0x8fd8cc); bMark.material.opacity = broken ? 0.55 : 0.14; bMark.scale.setScalar(broken ? 1.5 + Math.sin(wall * 8) * 0.15 : 1.25);
   fx.update(dt);
   updateCamera(dt, wall);
   world.update(wall, camera);
@@ -308,5 +330,6 @@ Object.defineProperty(window, '__game', {
 });
 
 updateCamera(0.016, 0);
-cam.pos.set(0, 2.6, 8.5);
+cam.pos.set(3.6, 1.55, 9.6); cam.look.set(1.5, 1.3, -0.2);
+if (galFigs) { cam.pos.set(0, 1.9, 8.2); cam.look.set(0, 0.95, 0); }
 renderer.setAnimationLoop(frame);

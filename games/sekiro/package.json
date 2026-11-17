@@ -10,6 +10,8 @@
     "build": "vite build",
     "install:browsers": "playwright install chromium",
     "test:sim": "node tests/sim.test.mjs",
+    "shots:compare": "node tests/compare-shots.mjs",
+    "test:online-check": "node tests/run-online-check.mjs",
     "test:offline": "node tests/offline.mjs"
   },
   "devDependencies": {
