@@ -295,7 +295,9 @@ state probe, and the existing tests working. Keep all changes inside that
 game directory. Do not commit, push, publish, or request intermediate
 reviews.
 "@
-        if (Test-Path -LiteralPath (Join-Path (Join-Path $trees $id) "games\$id\compare\before-title.png") -PathType Leaf) {
+        $cmpRel = 'compare'
+        if ($upgradeBrief.Contains("compare/$Upgrade/")) { $cmpRel = "compare\$Upgrade" }
+        if (Test-Path -LiteralPath (Join-Path (Join-Path $trees $id) "games\$id\$cmpRel\before-title.png") -PathType Leaf) {
             $head += @"
 
 An earlier session of this upgrade was interrupted before it finished. The
@@ -641,8 +643,13 @@ foreach ($job in $queue) {
         if ($isUpgrade) {
             $needSession = $true
             $mode = 'upgrade'
-            $extraFiles = @('compare\before-title.png', 'compare\before-explore.png', 'compare\before-combat.png',
-                            'compare\after-title.png', 'compare\after-explore.png', 'compare\after-combat.png')
+            # A brief that names compare/<upgrade>/ keeps its evidence in that subfolder.
+            $cmp = 'compare'
+            $upText = Read-Utf8 (Join-Path $repo "tasks\$id.$Upgrade.md")
+            if ($upText.Contains("compare/$Upgrade/")) { $cmp = "compare\$Upgrade" }
+            $extraFiles = @("$cmp\before-title.png", "$cmp\before-explore.png", "$cmp\before-combat.png",
+                            "$cmp\after-title.png", "$cmp\after-explore.png", "$cmp\after-combat.png")
+            if ($upText.Contains("compare/$Upgrade/gameplay.webm")) { $extraFiles += "$cmp\gameplay.webm" }
             Write-Log "[UPGRADE] $id pass '$Upgrade' on the delivered game; current delivery stays until the new build passes."
         }
         $ok = $false
@@ -715,7 +722,10 @@ foreach ($job in $queue) {
                 $prevDir = Join-Path $deliveries 'previous'
                 New-Item -ItemType Directory -Force -Path $prevDir | Out-Null
                 $prevName = [System.IO.Path]::GetFileNameWithoutExtension($job.delivery) + '.before-' + $Upgrade + '.html'
-                Copy-Item -LiteralPath $target -Destination (Join-Path $prevDir $prevName) -Force
+                # Keep the first backup: a resumed upgrade must not replace it with a partial build.
+                if (-not (Test-Path -LiteralPath (Join-Path $prevDir $prevName) -PathType Leaf)) {
+                    Copy-Item -LiteralPath $target -Destination (Join-Path $prevDir $prevName) -Force
+                }
                 Write-Log ("[UPGRADE] Previous delivery kept at {0} ({1} bytes); new build is {2} bytes" -f (Join-Path $prevDir $prevName), (Get-Item -LiteralPath $target).Length, (Get-Item -LiteralPath $html).Length)
                 $s.upgradeDone = $Upgrade
                 $s.push = 'pending'
