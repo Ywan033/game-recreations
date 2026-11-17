@@ -125,3 +125,14 @@ fits in a test; tests 1, 2 and 7 use default quality. Screenshots from the run a
 - Lightning flashes, footstep effects and the result-screen orbit camera were checked only by
   absence of errors and a few screenshots, not asserted.
 - Long sessions (many consecutive retries) and window resizing during play.
+
+## Published page check (added by the launcher run, 2026-11-17)
+
+The delivered `play.html` was published unchanged to GitHub Pages:
+https://ywan033.github.io/game-recreations/play/rainlane-blades.html
+
+`scripts/verify-online.cjs` with `tests/online-check.cjs` opened that URL in a fresh, logged-out
+Chromium context (headless, WebGL 2 backend): HTTP 200, canvas visible, a real mouse click on the
+start button began the fight, `W` moved the player 0.54 m, mouse movement turned the camera, the
+left button started an attack, and there were no uncaught page errors. Result: PASS. This is a
+short load-and-input check, not a full fight.
