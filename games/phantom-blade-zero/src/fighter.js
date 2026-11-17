@@ -3,7 +3,7 @@
 // Animation is pose-driven for the upper body; legs are solved with two-bone IK onto feet that
 // plant in world space and step when the body moves, so feet do not slide.
 import * as THREE from 'three/webgpu';
-import { ATTACKS, DODGE, currentSeg, angDiff } from './sim.js';
+import { ATTACKS, DODGE, JUMP, CHARGE, HEAVY, FLASK, currentSeg, angDiff } from './sim.js';
 import { detailMaps, canvasTex } from './tex.js';
 
 // ------------------------------------------------------------------ skeleton
@@ -153,6 +153,61 @@ PP.s1c = add(PP.s1b, { y: -0.03, torso: [0.06, 0.3, 0], armR: [0.25, 0, 0.3], ha
 PP.s2c = add(PP.s2b, { y: -0.03, torso: [0.05, -0.3, 0], armR: [0.3, 0, -0.25], handR: [0.2, 0, 0] });
 PP.s3c = add(PP.s3b, { y: -0.05, torso: [0.12, 0, 0], armR: [0.3, 0, 0], armL: [0.3, 0, 0], handR: [0.15, 0, 0] });
 const SWINGS = [[PP.s1a, PP.s1b, PP.s1c], [PP.s2a, PP.s2b, PP.s2c], [PP.s3a, PP.s3b, PP.s3c]];
+// ---- controls pass: jump, landing, charged heavy, drinking
+// jump: sink and throw the arms back, drive up with the free arm, open out to fall, absorb on landing
+PP.jumpCrouch = {
+  y: -0.3, pz: -0.03, body: [0.14, 0, 0], torso: [0.46, 0, 0], head: [-0.3, 0, 0],
+  armR: [0.55, 0, -0.3], foreR: [-0.5, 0, 0], handR: [0.9, 0, 0],
+  armL: [0.6, 0, 0.3], foreL: [-0.45, 0, 0],
+  st: [0.15, 0.1, -0.16, -0.1, 0.15, -0.4],
+};
+PP.airUp = {
+  y: 0.03, body: [-0.06, -0.12, 0], torso: [-0.1, 0.1, 0], head: [0.12, 0, 0],
+  armR: [-0.45, 0, -0.6], foreR: [-0.8, 0, 0], handR: [0.7, 0, 0],
+  armL: [-1.45, 0, 0.45], foreL: [-0.55, 0, 0],
+  st: [0.12, 0.2, -0.13, -0.14, 0.05, -0.3],
+};
+PP.airDown = {
+  y: 0, body: [0.05, -0.08, 0], torso: [0.16, 0.06, 0], head: [-0.1, 0, 0],
+  armR: [-0.25, 0, -0.85], foreR: [-0.55, 0, 0], handR: [0.85, 0, 0],
+  armL: [-0.55, 0, 0.95], foreL: [-0.4, 0, 0],
+  st: [0.15, 0.14, -0.16, -0.1, 0.12, -0.4],
+};
+PP.land = {
+  y: -0.37, pz: 0.03, body: [0.16, -0.1, 0], torso: [0.5, 0.08, 0], head: [-0.34, 0, 0],
+  armR: [0.15, 0, -0.5], foreR: [-0.65, 0, 0], handR: [0.85, 0, 0],
+  armL: [-0.35, 0, 0.62], foreL: [-0.85, 0, 0],
+  st: [0.19, 0.17, -0.2, -0.15, 0.2, -0.55],
+};
+// charge: the blade is drawn back high over the right shoulder, weight on the rear leg, free hand forward
+PP.charge = {
+  y: -0.2, pz: -0.1, body: [-0.04, -0.6, 0], torso: [-0.1, -0.62, 0.06], head: [0.1, 1.05, 0],
+  armR: [-2.55, 0, -0.55], foreR: [-1.25, 0, 0], handR: [-0.35, 0, 0],
+  armL: [-1.15, 0, -0.2], foreL: [-0.45, 0, 0],
+  st: [0.14, 0.32, -0.19, -0.34, 0.05, -0.95],
+};
+// heavy: the whole body unwinds into a long diagonal cut that ends low, then has to be hauled back
+PP.heavyB = {
+  y: -0.34, pz: 0.2, body: [0.2, 0.42, 0], torso: [0.52, 0.6, 0], head: [-0.3, -0.85, 0],
+  armR: [-0.9, 0, 0.45], foreR: [-0.08, 0, 0], handR: [1.3, 0, 0],
+  armL: [0.55, 0, 0.6], foreL: [-0.5, 0, 0],
+  st: [0.16, 0.66, -0.18, -0.44, 0, -0.95],
+};
+PP.heavyC = add(PP.heavyB, { y: -0.07, torso: [0.14, 0.26, 0], armR: [0.42, 0, 0.3], handR: [0.2, 0, 0], head: [0, -0.1, 0] });
+// drink: the free hand takes the gourd from the belt and brings it to the mouth; the sword hand
+// drops to the side with the point low, the head tips back
+PP.drinkA = {
+  y: -0.06, body: [0, -0.2, 0], torso: [0.1, -0.22, 0], head: [0.12, 0.3, 0],
+  armR: [0.05, 0, -0.3], foreR: [-0.35, 0, 0], handR: [1.05, 0, 0],
+  armL: [0.3, 0, 0.3], foreL: [-1.0, 0, 0],
+  st: [0.13, 0.12, -0.15, -0.14, 0.1, -0.5],
+};
+PP.drinkB = {
+  y: -0.02, pz: -0.03, body: [-0.06, -0.1, 0], torso: [-0.2, 0.06, 0], head: [-0.46, 0.1, 0],
+  armR: [0.08, 0, -0.32], foreR: [-0.3, 0, 0], handR: [1.1, 0, 0],
+  armL: [-1.38, 0, -0.5], foreL: [-2.05, 0, 0], handL: [0, 0, 0.35],
+  st: [0.13, 0.1, -0.15, -0.16, 0.1, -0.5],
+};
 
 const BP = {
   wait: {
@@ -550,7 +605,9 @@ function makeRig(scale) {
       root.scale.setScalar(scale); // the contact shadow is in root space and scales with the fighter
     },
     // place the fighter and estimate its ground velocity
-    place(x, z, yaw, dt) {
+    airY: 0,
+    place(x, z, yaw, dt, y = 0) {
+      this.airY = y;
       const jump = this.px === null || Math.hypot(x - this.px, z - this.pz) > 2.5;
       if (jump) { this.vx = 0; this.vz = 0; this.snap = true; } else if (dt > 1e-5) {
         const k = 1 - Math.exp(-dt * 18);
@@ -559,7 +616,7 @@ function makeRig(scale) {
       }
       this.px = x; this.pz = z;
       this.speed = Math.hypot(this.vx, this.vz);
-      root.position.set(x, 0, z);
+      root.position.set(x, y, z);
       root.rotation.y = yaw;
     },
     // pose: target pose; o: { mode: 'step' | 'glue' | 'hop', stepDur, armSwing, hop }
@@ -577,7 +634,7 @@ function makeRig(scale) {
       for (let i = 0; i < 6; i++) this.curSt[i] += (st[i] - this.curSt[i]) * kB;
       this.yawExtra = pose.yaw || 0;
       const fk = !!pose.fk;
-      const mode = o.mode || 'step';
+      const mode = this.airY > 0.02 ? 'air' : (o.mode || 'step'); // off the ground the feet hang from the body
       if (!fk) this.updateFeet(dt, this.snap || this.fk ? 'snap' : mode, o);
       this.snap = false;
       this.fk = fk;
@@ -619,7 +676,10 @@ function makeRig(scale) {
         blob.position.set(0, 0.022, c.body[0] > 0 ? 0.5 : -0.5);
         return;
       }
-      blob.position.set(0, 0.022, 0);
+      // the contact shadow stays on the ground and thins out as the fighter rises
+      blob.position.set(0, 0.022 - this.airY / s, 0);
+      blob.scale.setScalar(1 / (1 + this.airY * 0.55));
+      blob.material.opacity = 0.8 / (1 + this.airY * 1.2);
 
       // keep the pelvis low enough for both planted feet to reach the ground
       root.updateMatrixWorld(true);
@@ -644,7 +704,9 @@ function makeRig(scale) {
       const X = root.position.x, Z = root.position.z;
       const sp = this.speed;
       const dx = sp > 1e-3 ? this.vx / sp : 0, dz = sp > 1e-3 ? this.vz / sp : 0;
-      const half = Math.min(0.34 * s, sp * 0.15);
+      // reach of a stride: the foot lands this far ahead of its place under the body and leaves
+      // about as far behind (longer than before, so a run opens the legs instead of pattering)
+      const half = Math.min(0.43 * s, sp * 0.16);
       const st = this.curSt;
       for (let i = 0; i < 2; i++) {
         const f = this.feet[i], other = this.feet[1 - i];
@@ -652,6 +714,17 @@ function makeRig(scale) {
         const hx = X + lx * cs + lz * sn, hz = Z - lx * sn + lz * cs; // home under the body
         const hyaw = yaw + st[4 + i];
         if (mode === 'snap') { f.x = hx; f.z = hz; f.yaw = hyaw; f.sw = false; f.lift = 0; f.pitch = 0; f.since = 1; continue; }
+        if (mode === 'air') {
+          // airborne: the feet travel with the body (knees tucked by the pose), toes hanging
+          const k = 1 - Math.exp(-dt * 40);
+          f.x += (hx - f.x) * k; f.z += (hz - f.z) * k; f.yaw += angDiff(hyaw, f.yaw) * k;
+          const tuck = (o.tuck ?? 0.1) * (i ? 0.55 : 1) * s;
+          f.lift += (this.airY + tuck - f.lift) * (1 - Math.exp(-dt * 30));
+          if (f.lift < this.airY) f.lift = this.airY;
+          f.pitch += ((o.toe ?? 0.45) - f.pitch) * k;
+          f.sw = false; f.since = 0.05;
+          continue;
+        }
         if (mode === 'glue' || mode === 'hop') {
           const k = 1 - Math.exp(-dt * 26);
           f.x += (hx - f.x) * k; f.z += (hz - f.z) * k; f.yaw += angDiff(hyaw, f.yaw) * k;
@@ -677,7 +750,9 @@ function makeRig(scale) {
           const yawErr = Math.abs(angDiff(hyaw, f.yaw));
           let lift;
           // swing time grows with speed; at a run it outlasts the stance, which gives a flight phase
-          const dur = o.stepDur || Math.max(0.2, Math.min(0.36, 0.16 + sp * 0.037));
+          // (shorter than before: the flight phase of a run is now a brief float between long
+          // strides, about a quarter of the cycle, rather than half of it)
+          const dur = o.stepDur || Math.max(0.19, Math.min(0.275, 0.15 + sp * 0.024));
           if (sp > 0.5) {
             // The feet must alternate: this one may only leave the ground once the other is down,
             // or far enough through its own swing that the two stay half a cycle apart.
@@ -692,8 +767,8 @@ function makeRig(scale) {
           if (lift) {
             f.sw = true; f.u = 0; f.fx = f.x; f.fz = f.z; f.fyaw = f.yaw;
             f.dur = dur;
-            f.h = (0.04 + Math.min(0.11, sp * 0.02)) * s;
-            f.pa = Math.min(0.6, 0.1 + sp * 0.09);
+            f.h = (0.04 + Math.min(0.14, sp * 0.026)) * s;
+            f.pa = Math.min(0.75, 0.1 + sp * 0.12);
           }
         }
       }
@@ -894,6 +969,33 @@ export function makePlayer() {
   addBlade(rig, J.handR, swordG, gripR, 1.03);
   rig.steel = mat.steel;
 
+  // healing flask: a small lacquered gourd with a cord, worn at the back of the right hip and
+  // taken in the free (left) hand to drink. Two copies, shown one at a time.
+  const gourdMat = S({ color: 0x6a2418, roughness: 0.32, roughnessMap: detail(D.smudge, 1, 1) });
+  const mkGourd = () => {
+    const grp = new THREE.Group();
+    const prof = [[0.001, -0.07], [0.03, -0.064], [0.046, -0.04], [0.047, -0.018], [0.036, 0.004], [0.021, 0.016], [0.02, 0.024], [0.03, 0.04],
+      [0.031, 0.054], [0.021, 0.07], [0.011, 0.078], [0.011, 0.092], [0.001, 0.094]].map((q) => new THREE.Vector2(q[0], q[1]));
+    const body = new THREE.Mesh(new THREE.LatheGeometry(prof, 14), gourdMat);
+    body.castShadow = true;
+    const cord = new THREE.Mesh(new THREE.TorusGeometry(0.023, 0.005, 6, 14), mat.sash);
+    cord.rotation.x = Math.PI / 2; cord.position.y = 0.02;
+    const stop = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.01, 0.018, 8), mat.wood);
+    stop.position.y = 0.1;
+    grp.add(body, cord, stop);
+    return grp;
+  };
+  rig.gourdHip = mkGourd();
+  rig.gourdHip.position.set(-0.17, 0.0, -0.11);
+  rig.gourdHip.rotation.set(0.25, 0, 0.2);
+  J.body.add(rig.gourdHip);
+  rig.gourdHand = mkGourd();
+  const gripL = [0.005, -0.08, 0];
+  rig.gourdHand.rotation.x = Math.PI / 2; // neck along the fist's +z, which faces the mouth when the hand comes up
+  rig.gourdHand.position.set(gripL[0] - 0.012, gripL[1], gripL[2] - 0.012);
+  rig.gourdHand.visible = false;
+  J.handL.add(rig.gourdHand);
+
   // swaying cloth: scarf tail, sash ends, hair ribbon
   const sw = (segs, rx, rz, back, amp, f) => rig.sway.push({ segs, rx, rz, back, amp, f, ph: rig.sway.length * 1.7 });
   sw(strip(J.torso, [0.05, 0.01, 0.132], 2, 0.06, 0.2, mat.sash, 0.8), -0.06, 0.08, 0.6, 0.05, 3.6);
@@ -1055,12 +1157,55 @@ export function makeBoss() {
 // ------------------------------------------------------------------ animation
 
 export function animatePlayer(rig, p, dt, time) {
-  rig.place(p.x, p.z, p.yaw, dt);
+  rig.place(p.x, p.z, p.yaw, dt, p.y || 0);
   let pose = PP.idle;
   let rate = 16;
   const o = { mode: 'step', armSwing: 0 };
   rig.trail = false;
-  if (p.st === 'dead') {
+  const drinking = p.st === 'drink' && p.t > 0.16 && p.t < FLASK.wind + FLASK.rec - 0.12;
+  if (rig.gourdHand) { rig.gourdHand.visible = drinking; rig.gourdHip.visible = !drinking; }
+  if (p.st === 'jumpStart') {
+    pose = PP.jumpCrouch; rate = 44; o.stepDur = 0.1;
+  } else if (p.st === 'air') {
+    // rise with the knees drawn up, open out over the top, reach for the ground coming down
+    const up = sat((p.vy + 1.5) / (JUMP.v0 + 1.5));
+    pose = mix(PP.airDown, PP.airUp, ease(up));
+    rate = 20;
+    o.tuck = 0.12 + 0.32 * Math.sin(Math.PI * sat(1 - Math.abs(p.vy) / JUMP.v0));
+    o.toe = 0.2 + 0.5 * up;
+  } else if (p.st === 'land') {
+    const u = sat(p.t / JUMP.land);
+    pose = u < 0.55 ? PP.land : mix(PP.land, p.moving ? PP.run : PP.idle, (u - 0.55) / 0.45);
+    rate = u < 0.55 ? 48 : 16;
+    o.stepDur = 0.12;
+  } else if (p.st === 'charge') {
+    const u = sat(p.chargeT / CHARGE.full);
+    const sh = p.charged ? Math.sin(time * 52) * 0.012 : 0;
+    pose = add(PP.charge, { y: -0.05 * u, torso: [0, -0.12 * u, 0], armR: [sh - 0.12 * u, 0, 0], handR: [sh, 0, 0] });
+    rate = 15;
+    o.stepDur = 0.2;
+  } else if (p.st === 'heavy') {
+    const H = HEAVY;
+    const t0 = H.wind * 0.35;
+    const t1 = H.wind + H.act;
+    const t2 = t1 + H.rec * 0.45;
+    const tot = H.wind + H.act + H.rec;
+    if (p.t < t0) { pose = add(PP.charge, { y: -0.06, torso: [-0.06, -0.14, 0] }); rate = 40; }
+    else if (p.t < t1) { pose = mix(PP.charge, PP.heavyB, ease((p.t - t0) / (t1 - t0))); rate = 60; rig.trail = true; }
+    else if (p.t < t2) { pose = mix(PP.heavyB, PP.heavyC, easeOut((p.t - t1) / (t2 - t1))); rate = 22; rig.trail = p.t < t1 + 0.08; }
+    else { pose = mix(PP.heavyC, PP.idle, ease((p.t - t2) / (tot - t2))); rate = 10; }
+    o.stepDur = 0.12;
+  } else if (p.st === 'drink') {
+    const W = FLASK.wind;
+    if (p.t < 0.2) { pose = PP.drinkA; rate = 20; }
+    else if (p.t < W + 0.14) {
+      // tip the gourd further as the swallow comes
+      const k = sat((p.t - 0.2) / (W - 0.2));
+      pose = add(PP.drinkB, { head: [-0.14 * k, 0, 0], handL: [-0.25 * k, 0, 0], torso: [-0.05 * k, 0, 0] });
+      rate = 15;
+    } else { pose = mix(PP.drinkA, PP.idle, ease((p.t - W - 0.14) / (FLASK.rec - 0.14))); rate = 13; }
+    o.stepDur = 0.22;
+  } else if (p.st === 'dead') {
     pose = p.t < 0.35 ? mix(PP.hurt, add(PP.hurt, { y: -0.35, torso: [-0.2, 0, 0] }), p.t / 0.35) : PP.dead;
     rate = 9;
   } else if (p.st === 'hurt') {

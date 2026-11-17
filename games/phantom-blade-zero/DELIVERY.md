@@ -30,16 +30,23 @@ the realism pass (2026-11-17). `npm run test:sim` (optional, code-level) also ex
 | Action | Keyboard | Mouse |
 | --- | --- | --- |
 | Move | `W A S D` / arrow keys | — |
-| 3-hit light combo | `J` (press up to 3×) | left button |
+| 3-hit light combo | `J`, short presses (up to 3×) | left button, short presses |
+| Charged heavy | `J`, hold to the "fully charged" cue, release | left button, hold and release |
 | Guard (hold) | `K` | right button (hold) |
-| Sidestep with i-frames | `Space` / `L` (+ direction; none = step back) | — |
+| Sidestep with i-frames | Left Shift (`ShiftLeft` only) / `L` (+ direction; none = step back) | — |
+| Jump | `Space` (edge-triggered) | — |
+| Healing flask (3 charges) | `R` (during the fight only) | — |
 | Camera | `Q` / `E` | move the mouse (pointer lock is optional) |
 | Lock-on toggle | `F` / `Tab` | middle button |
 | Pause · Mute | `P` · `M` | — |
-| Start / Retry | `Enter` (retry also `R`) | click the on-screen button |
+| Start / Retry | `Enter` (on the result screen `R` also retries; in the fight `R` is only the flask) | click the on-screen button |
+
+(This table is the final scheme after the controls pass; details and numbers are in the section
+"Controls, motion and audio pass" at the end. The test tables just below describe the earlier
+deliveries; the current results are in that section.)
 
 Documented URL-hash options (testing/debug): `seed=N`, `bhp=X`, `php=X` (health scales),
-`q=low`, `gl` (force WebGL 2), `mute`. Read-only probe: `window.__game.snapshot()` and
+`q=low`, `gl` (force WebGL 2), `mute`, `nomusic`, `rec` (recording hook). Read-only probe: `window.__game.snapshot()` and
 `window.__game.events(sinceT)`.
 
 ## Real-input offline test results (`npm run test:offline`)
@@ -289,3 +296,199 @@ Chromium context (headless, WebGL 2 backend): HTTP 200, canvas visible, a real m
 start button began the fight, `W` moved the player 0.54 m, mouse movement turned the camera, the
 left button started an attack, and there were no uncaught page errors. Result: PASS. This is a
 short load-and-input check, not a full fight.
+
+## Controls, motion and audio pass (2026-11-17)
+
+Work done on the existing code (skinned fighters, sim, tests). Arena, boss, combat rules, URL hash
+options, the `window.__game` probe and the single-file offline HTML are kept. `dist/play.html`
+is 995.9 kB (was 972.1 kB). No third-party assets: everything, including all audio, is still
+generated in code; the only bundled dependency is three.js (MIT, notice kept in the file).
+
+### Final key list
+
+| Action | Keyboard | Mouse |
+| --- | --- | --- |
+| Move | `W A S D` / arrow keys | — |
+| Light attack / 3-step combo | `J`, short press | left button, short press |
+| Charged heavy | `J`, hold until the "fully charged" cue, release | left button, hold and release |
+| Guard (hold) | `K` | right button |
+| Dodge (sidestep, i-frames) | Left Shift (`KeyboardEvent.code === "ShiftLeft"`; Right Shift is unbound), `L` as alternative | — |
+| Jump | `Space` only (the old Space dodge is removed) | — |
+| Healing flask | `R`, during the fight only | — |
+| Camera | `Q` / `E` | move the mouse |
+| Lock-on toggle | `F` / `Tab` | middle button |
+| Pause · Mute | `P` · `M` | — |
+| Start | `Enter` | start button |
+| Retry (result screen) | `Enter`, or `R` from 0.6 s after the screen appears | retry button |
+
+`R` never retries during the fight and never drinks on the result screen; a retry press is not
+passed to the simulation. The HUD (flask pips and count, charge meter, key hints), the
+start-screen key list and README.md are updated.
+
+### Numbers (one config block at the top of `src/sim.js`: `JUMP`, `CHARGE`, `HEAVY`, `FLASK`)
+
+- **Jump**: take-off crouch 0.07 s → airborne (v0 6.8 m/s, gravity 22 m/s², apex 1.0 m, about
+  0.62 s in the air) → landing 0.14 s (45 % move speed), then normal input. States `jumpStart`,
+  `air`, `land`. Air steering bends the take-off velocity toward the stick at 10 m/s² (max
+  5.4 m/s). Edge-triggered in the page and again in the sim. Walls, props, the arena boundary and
+  the boss body collide exactly as on the ground (nothing can be jumped onto or over).
+- **Jump vs. boss attacks (decision)**: no invulnerability. Only attacks flagged `low` — the
+  lunge dash and the phase-two spinning sweep — pass under a player whose feet are more than
+  0.45 m up; the segment stays live, so landing inside it still hurts. Chain slashes, the delayed
+  overhead strike and the reverse cut hit an airborne player for full damage, and in the air you
+  cannot guard, dodge, attack or drink.
+- **Attack key (decision: light-on-press with upgrade)**: a press starts the light cut's wind-up
+  immediately, so a tap hits after the same 0.13 s as before and the combo timings are unchanged.
+  Still held when the wind-up ends → charge. Released before 0.5 s of charge → that same light
+  cut lands at once. Released after it (0.63 s from the press), or held for 3 s → one heavy
+  instead: wind-up 0.14 s, active 0.12 s, recovery 0.6 s, 34 damage (×1.8 on a punish = 61,
+  ×0.7 on a ready boss), reach 3.05 m. Full-charge cue: two-note ring, flash and sparks on the
+  blade, "蓄满" floater, HUD meter turns white. Charging allows a slow walk (1.5 m/s) and can be
+  dodge-cancelled; a hit breaks it.
+- **Flask**: 3 charges, each heals 37.5 % of max health (45 of 120), capped at max. Wind-up
+  0.6 s, then charge consumption and heal happen in the same simulation step, then 0.35 s
+  recovery (slow walk 1.3 m/s throughout). A hit before that step costs nothing and heals
+  nothing; after it both have happened. Full health or empty flask: dull double knock, HUD shake,
+  floater, nothing spent. Retry restores 3. Tuning rationale: boss hits are 9–24, so one drink
+  buys back about two to four hits, and the 0.95 s commitment only fits inside a boss recovery.
+- **Cleanup**: pause, window blur, death, the result screen and retry clear held/latched input;
+  a charge, an unfinished drink or a jump crouch returns to idle with nothing spent and nothing
+  swung. A body already in the air finishes its fall after a pause (it is not teleported).
+
+### Look and motion
+
+- Run: stride reach 0.34 → 0.43 m each side, swing time at a run 0.36 → 0.28 s (flight phase
+  about a quarter of the cycle instead of half), slightly higher foot lift and heel pitch. Feet
+  still plant in world space.
+- New poses with weight shift: jump crouch, rise (knees tucked, free arm driving up), fall,
+  landing squat; charge (blade drawn back over the shoulder, weight on the rear leg), heavy cut
+  ending low with a long recovery; drink (a lacquered gourd leaves the hip, the left hand brings
+  it to the mouth, head tips back, sword hand hangs with the point low). Contact shadow stays on
+  the ground and thins with height.
+- Materials: wet flagstone roughness scaled 1.0 → 0.86; timber 0.88 → 0.97 and dark wood
+  0.84 → 0.93 (matte); iron 0.5 → 0.4, copper 0.36 → 0.27, brass 0.38 → 0.29.
+- Camera: the pivot follows a jump by at most 0.5 m, smoothed; the existing height cap still
+  applies. Measured rise during a jump: 0.00 m locked on in the open, 0.03 m with the back to a
+  wall, camera in bounds throughout.
+- I looked at `after-title.png`, `frame-jump.png`, `frame-charged.png`, `frame-drink.png` and
+  `frame-heavy.png`. Fixed from that: the full-charge flash and blade glow were large enough to
+  wash out the player (reduced), the charge meter overlapped the player (moved down), knees were
+  barely tucked in the air (increased), and the title screen was checked to still fit 720p.
+
+### Rain audio (replaced; `src/audio.js`)
+
+Four synthesised layers on an ambience bus: a distant curtain (two decorrelated noise loops of
+7.3 s and 11.9 s, level and tone drifting on a random schedule); single drops on stone and
+puddles (Poisson-timed ticks and plops, each with its own level, pitch, length and pan, 5–18 per
+second); eave drips at 14 fixed points, level by distance and pan by bearing from the camera;
+rain on the timber eaves and tiles (dull knocks plus a low rumble). Player position crossfades
+them: under cover (lane, north/west/east eaves) the curtain is quieter and darker and roof and
+drips come up; in the open yard the curtain opens up and the stone drops are densest. Combat
+cues duck the ambience (to 35–80 % depending on the cue) and close a low-pass on it for
+0.1–1.2 s. Footsteps were made louder. Pause fades the output and suspends the audio clock; mute
+zeroes the output gain; the context is created on the first key or mouse gesture.
+
+**Measured** (captured from the game's output node in the page by `npm run capture`, full
+Chromium, 48 kHz stereo; file `compare/controls/audio-measurements.json`):
+
+| Capture | Peak | RMS | Clipped samples |
+| --- | --- | --- | --- |
+| Ambience alone at the output, standing in the lane, no music (6 s) | −17.3 dBFS | −34.8 dBFS | 0 |
+| Rain bus while walking lane → lane mouth → wall side → lane end (`ambience.wav`, 21 s) | −17.5 dBFS | −36.3 dBFS | 0 |
+| Output with combat cues, fighting, no music (26 s) | −3.3 dBFS | −27.0 dBFS | 0 |
+| Rain bus during combat (9 s) | −22.6 dBFS | −37.5 dBFS | 0 |
+| Muted (2.5 s) | 0 (digital silence) | 0 | 0 |
+| Paused | no samples produced; audio clock advanced 0 s; state `suspended` | — | — |
+| After resume (2 s) | −6.6 dBFS | −30.9 dBFS | 0 |
+| Audio track decoded back out of `gameplay.webm` (25 s, music on) | −2.9 dBFS | −24.6 dBFS | 0 |
+
+So combat cues sit about 8 dB above the rain bed on average and about 14 dB above it at peak.
+
+**Listening: none.** Nobody listened to the game, the clip or the WAV in this session. Whether
+the rain now sounds like a place rather than a hiss, whether the drips and roof patter are
+convincing, and whether the bed is too quiet at −35 dBFS are untested by ear. The numbers above
+only show level, headroom, silence when muted/paused and that the layers respond to position.
+
+### Test results (this session, Windows 11, Playwright Chromium)
+
+`npm ci`, `npm run build`, `npm run install:browsers` exit 0. `npm run test:offline` exits 0:
+**9 passed** (9.6 min), on the final build; `npm ci` and the build were repeated afterwards and
+produced the same bundle, but the suite was not run a second time after that.
+
+Real-input offline suite (only `play.html` copied to an empty temp directory, `file://`, offline
+context, real keyboard and mouse, fails on page errors, console errors and any network request):
+
+| # | Test | Type | Backend | Result |
+| --- | --- | --- | --- | --- |
+| 1 | Opening, key list (now includes Left Shift, Space = jump, R, charge), fits 720p, start by click | start-up | WebGL 2 | pass |
+| 2 | Forced WebGL 2 renders the yard | start-up/smoke | WebGL 2 | pass |
+| 3 | Movement, mouse look, boundary and body collision, near-wall camera | regression | WebGL 2 | pass |
+| 4 | Combo, guard, dodge (now Left Shift), punish, lunge | fight regression | WebGL 2 | pass |
+| 5 | Phase two, changed behaviour, victory, one drink on the way, `R` retry restores the flask and is not taken as a drink | full fight | WebGL 2 | pass (flask 2/3 at victory → 3/3) |
+| 6 | Defeat, retry by button restores the flask, mouse attack and guard, pause | full fight | WebGL 2 | pass |
+| 7 | Controls: Left Shift dodges once and does not jump, Right Shift does nothing; Space held jumps once (apex 1.00 m), lands, does not dodge; running jump stays in the lane; tap = one light; three taps = combo 1-2-3; hold → charged cue → release = one heavy with no light cut, by key and by mouse; early release = one light; pause mid-charge clears it, keys pressed while paused do nothing; audio starts on the first gesture, stops while paused, resumes, mute toggles; `R` at full health is refused and spends nothing | mechanics | WebGL 2 | pass |
+| 8 | In the fight: jump with lock-on (camera rise 0.00 m) and against a wall (0.03 m); a hit breaks a held charge and holding on starts nothing; a hit breaks a drink (flask still 3/3, no heal); three drinks with `R` held down, one heal and one charge each, capped at 480/480; empty flask refused | mechanics in a fight | WebGL 2 | pass |
+| 9 | WebGPU renders and plays (walk in, exchange blows) | smoke | WebGPU (hardware adapter, ≈121 fps) | pass |
+
+Render-path coverage: tests 1–8 ran on WebGL 2 (headless shell, software rendering). On WebGPU
+only test 9 ran in the suite, and it does not use the new keys. The new mechanics ran on WebGPU
+only in `npm run capture` (real input: run, jump, charged heavy that landed as a 61 punish, one
+drink), which asserts no page errors but is not part of the suite.
+
+Code-level tests (`npm run test:sim`, Node, no browser, state set directly — separate from the
+above): 11 passed. The 6 new ones in `tests/controls.test.mjs` cover jump states, edge
+triggering and wall collision in the air; low attacks jumped vs. others hitting an airborne
+player at full damage; tap / early release / full hold / hold-forever each giving exactly one
+strike; unchanged combo timing; charge broken by a hit, by `cancelActions`, and by death; flask
+single moment, cap, full/empty refusal, interruption before and after the sip, retry.
+
+Not real input: test helpers read state through the probe only. `window.__rec` (hash `rec`)
+records and measures but injects nothing. Window blur cleanup is implemented but was not
+exercised by a test (it needs a synthetic event).
+
+`tests/online-check.cjs` now also presses `ShiftLeft` (one dodge, no jump), holds `Space` (one
+jump, landing, no dodge) and presses `R` (handled as the flask; refused at full health, fight not
+restarted). It was run against the **local** build with `npm run check:online:local` in a plain
+headless Chromium and passed. It was **not** run against the published URL: the page has not
+been republished from this session, and the old published build would fail the new steps.
+
+### Performance
+
+| | Before this pass | After |
+| --- | --- | --- |
+| WebGPU, hardware adapter, default quality, uncapped headless | ≈124 fps (recorded in the realism pass) | ≈121 fps in test 9; median 141, minimum 112 during the capture clip |
+| Software WebGL 2 | ≈12 fps (recorded earlier) | not re-measured |
+
+The before figure comes from the earlier record, not from a same-session run, so this shows no
+visible regression rather than a controlled comparison.
+
+### Evidence (`compare/controls/`)
+
+- `before-title.png`, `before-explore.png`, `before-combat.png` and `after-*.png`: same script
+  (`tests/compare-shots.mjs before|after controls`), seed 7, 1280×720, default quality, real
+  input, both sets on the headless shell (WebGL 2) so they are like for like.
+- `gameplay.webm` (4.0 MB, 25 s, VP9 + Opus): running, a jump, a boss attack, a drink, a charged
+  heavy, with the ambience and music. Recorded in the page with MediaRecorder over
+  `canvas.captureStream()` plus a `MediaStreamAudioDestinationNode` on the output, on WebGPU.
+  The DOM HUD is not part of a canvas capture, so it is not in the clip.
+- `frame-run|jump|boss-attack|drink|charged|heavy.png`: page screenshots (with HUD) taken during
+  that recording.
+- `ambience.wav` (21 s, 48 kHz stereo) and `audio-measurements.json`.
+
+### Remaining problems and unverified items
+
+- Audio quality is unjudged by ear (see above). `ambience.wav` only covers the lane and the lane
+  mouth, because walking further starts the fight; the north and west eave zones are computed
+  the same way but were not captured.
+- The wall-hugging turn and lane-mouth camera checks asked for in the motion section were covered
+  only by the existing near-wall test and the new jump samples; I did not add a dedicated
+  lane-mouth test or look for lantern/chain clipping beyond the existing camera margins.
+- The run gait change was made from the numbers, and checked in one still frame, not reviewed
+  as motion; foot sliding in the blended (non-stepping) modes is unchanged.
+- The airborne pose is stiff from behind (arms wide, legs fairly straight).
+- A press held slightly longer than 0.13 s becomes a brief charge before the light cut lands;
+  the cut is delayed by exactly the extra hold time.
+- The swing whoosh plays at the press, so a charge begins with a light whoosh.
+- All three drinks in test 8 were capped by max health; an uncapped 37.5 % heal is checked only
+  in the code-level test.
+- Ducking is brief: the rain bus averages only 1–2 dB lower during combat than in the lane.

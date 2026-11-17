@@ -2,6 +2,7 @@
 import * as THREE from 'three/webgpu';
 import {
   DT, ARENA, OBSTACLES, createGame, startFight, retry, step, drainEvents, currentSeg, hitIn, angDiff,
+  cancelActions, CHARGE, FLASK, JUMP, HEAVY,
 } from './sim.js';
 import { buildWorld } from './world.js';
 import { makePlayer, makeBoss, animatePlayer, animateBoss } from './fighter.js';
@@ -26,6 +27,8 @@ function parseHash() {
     quality: o.q === 'low' ? 'low' : 'high',
     forceGL: !!o.gl,
     mute: !!o.mute,
+    noMusic: !!o.nomusic, // rain and cues only (used to measure the ambience)
+    rec: !!o.rec, // exposes window.__rec: record the canvas plus the heard audio, capture the mix
   };
 }
 
@@ -105,7 +108,7 @@ async function boot() {
     console.warn('environment capture skipped: ' + (e && e.message ? e.message : e));
   }
   const fx = buildFx(scene, opts.quality, world);
-  const audio = createAudio();
+  const audio = createAudio({ noMusic: opts.noMusic });
   if (opts.mute) audio.toggleMute();
 
   const g = createGame({ seed: opts.seed, bossHpScale: opts.bossHpScale, playerHpScale: opts.playerHpScale });
@@ -122,8 +125,22 @@ async function boot() {
 
   // ------------------------------------------------------------ input
   const keys = new Set();
-  const edge = { attack: false, dodge: false };
-  const mouse = { guard: false, lastX: null, lastY: null };
+  const edge = { attack: false, dodge: false, jump: false, drink: false };
+  const mouse = { guard: false, attack: false, lastX: null, lastY: null };
+  let resultAt = 0; // wall time the result screen appeared (R only retries a moment later)
+  // pause, window blur, death and retry: nothing held or latched may carry over
+  function clearInput(all) {
+    edge.attack = false; edge.dodge = false; edge.jump = false; edge.drink = false;
+    mouse.attack = false; mouse.guard = false;
+    if (all) keys.clear(); else { keys.delete('KeyJ'); keys.delete('KeyK'); }
+    cancelActions(g);
+  }
+  function setPaused(v) {
+    paused = v;
+    $('paused').classList.toggle('hidden', !paused);
+    clearInput(false);
+    audio.setPaused(paused);
+  }
   const LOCK_REST = 0.3; // resting lock-on view sits slightly off the shoulder so the foe is never hidden behind the player
   const cam = { yaw: 0, pitch: 0.3, off: LOCK_REST, lock: true, base: 0, t: 1, lastMouse: -10, shake: 0, inBounds: true, dist: 5.8, avoid: 0, avoidS: 0, avoidTarget: 0, te: 1 };
   let paused = false;
@@ -140,6 +157,7 @@ async function boot() {
   }
   function doRetry() {
     if (g.mode === 'victory' || g.mode === 'defeat') {
+      clearInput(false);
       retry(g);
       $('result').classList.add('hidden');
       resetView();
@@ -151,16 +169,23 @@ async function boot() {
     keys.add(e.code);
     audio.start();
     if (e.code === 'Enter' || e.code === 'NumpadEnter') { if (g.mode === 'title') begin(); else doRetry(); return; }
-    if (e.code === 'KeyR') { doRetry(); return; }
     if (e.code === 'KeyM') { audio.toggleMute(); return; }
-    if (g.mode !== 'fight') return;
-    if (e.code === 'KeyP') { paused = !paused; $('paused').classList.toggle('hidden', !paused); return; }
+    if (g.mode !== 'fight') {
+      // R retries only on the result screen, and not in the instant it appears (so a drink
+      // press that lands as the fight ends cannot restart it by accident)
+      if (e.code === 'KeyR' && wall - resultAt > 0.6) doRetry();
+      return;
+    }
+    if (e.code === 'KeyP') { setPaused(!paused); return; }
+    if (paused) return;
     if (e.code === 'KeyJ') edge.attack = true;
-    if (e.code === 'Space' || e.code === 'KeyL') edge.dodge = true;
+    if (e.code === 'ShiftLeft' || e.code === 'KeyL') edge.dodge = true; // Left Shift only (by physical key)
+    if (e.code === 'Space') edge.jump = true;
+    if (e.code === 'KeyR') edge.drink = true; // during the fight R is the flask and nothing else
     if (e.code === 'KeyF' || e.code === 'Tab') { cam.lock = !cam.lock; cam.off = LOCK_REST; }
   });
   window.addEventListener('keyup', (e) => keys.delete(e.code));
-  window.addEventListener('blur', () => { keys.clear(); mouse.guard = false; });
+  window.addEventListener('blur', () => { clearInput(true); });
   window.addEventListener('contextmenu', (e) => e.preventDefault());
   window.addEventListener('mousedown', (e) => {
     audio.start();
@@ -168,6 +193,7 @@ async function boot() {
     if (g.mode !== 'fight' || paused) return;
     if (e.button === 0) {
       edge.attack = true;
+      mouse.attack = true;
       const el = renderer.domElement;
       if (document.pointerLockElement !== el && el.requestPointerLock) {
         try { const p = el.requestPointerLock(); if (p && p.catch) p.catch(() => {}); } catch { /* optional */ }
@@ -175,7 +201,7 @@ async function boot() {
     } else if (e.button === 2) mouse.guard = true;
     else if (e.button === 1) { cam.lock = !cam.lock; cam.off = LOCK_REST; e.preventDefault(); }
   });
-  window.addEventListener('mouseup', (e) => { if (e.button === 2) mouse.guard = false; });
+  window.addEventListener('mouseup', (e) => { if (e.button === 2) mouse.guard = false; else if (e.button === 0) mouse.attack = false; });
   window.addEventListener('mousemove', (e) => {
     let dx = e.movementX;
     let dy = e.movementY;
@@ -207,6 +233,7 @@ async function boot() {
   function resetView() {
     cam.yaw = 0; cam.off = LOCK_REST; cam.pitch = 0.3; cam.t = 1; cam.te = 1; cam.lock = true; cam.avoid = 0; cam.avoidS = 0; cam.avoidTarget = 0;
     lastHp = { p: -1, b: -1 };
+    cam.jy = 0;
   }
 
   // ------------------------------------------------------------ camera
@@ -306,7 +333,11 @@ async function boot() {
     const subj = ending ? (p.st === 'dead' ? p : b) : p;
     const other = subj === p ? b : p;
     if (ending) pivot.set(subj.x * 0.7 + other.x * 0.3, 1.2, subj.z * 0.7 + other.z * 0.3);
-    else pivot.set(p.x, 1.5, p.z);
+    else {
+      // a jump lifts the view only a little and smoothly, so the camera never pops upward
+      cam.jy = (cam.jy || 0) + (Math.min(0.5, p.y * 0.4) - (cam.jy || 0)) * (1 - Math.exp(-dt * 7));
+      pivot.set(p.x, 1.5 + cam.jy, p.z);
+    }
     const pitch = ending ? 0.42 : cam.pitch;
     const dist = ending ? 5.2 : cam.dist;
     const cp = Math.cos(pitch);
@@ -387,7 +418,7 @@ async function boot() {
       camera.position.x += (Math.random() - 0.5) * s; camera.position.y += (Math.random() - 0.5) * s;
     }
     camera.lookAt(curFocus);
-    tmp.set(p.x, 1.5, p.z);
+    tmp.set(p.x, 1.5 + p.y, p.z);
     pr.root.visible = ending || camera.position.distanceTo(tmp) > 0.85;
   }
 
@@ -419,6 +450,13 @@ async function boot() {
   }
   let lastHp = { p: -1, b: -1 };
   let hurtFlash = 0;
+  let lastFlask = -1;
+  function flaskShake() {
+    const f = $('flask');
+    f.classList.remove('deny');
+    void f.offsetWidth;
+    f.classList.add('deny');
+  }
   function updateHud() {
     const p = g.player;
     const b = g.boss;
@@ -445,9 +483,23 @@ async function boot() {
     if (g.mode === 'fight') {
       st.push(cam.lock ? '◆ 锁定 LOCK' : '◇ 自由视角 FREE');
       if (p.guard) st.push('格挡 GUARD');
+      if (paused) st.push('暂停 PAUSED');
       if (audio.muted) st.push('静音 MUTED');
     }
     $('status').textContent = st.join('　');
+    // flask pips and the charge meter
+    if (p.flask !== lastFlask) {
+      lastFlask = p.flask;
+      const pips = $('flaskpips').children;
+      for (let i = 0; i < pips.length; i++) pips[i].classList.toggle('on', i < p.flask);
+      $('flaskcount').textContent = p.flask + '/' + p.maxFlask;
+      $('flask').classList.toggle('empty', p.flask <= 0);
+    }
+    const cm = $('charge');
+    const charging = g.mode === 'fight' && p.st === 'charge';
+    cm.classList.toggle('on', charging);
+    cm.classList.toggle('full', charging && p.charged);
+    if (charging) cm.firstElementChild.style.width = (100 * Math.min(1, p.chargeT / CHARGE.full)) + '%';
     const lm = $('lockmark');
     if (lockActive()) {
       const s = project(b.x, 1.75, b.z);
@@ -468,6 +520,8 @@ async function boot() {
       `闪避 Dodges ${s.dodged}　·　受击 Hits taken ${s.hurt}　·　造成伤害 Damage ${s.damageDealt}`;
     if (document.pointerLockElement && document.exitPointerLock) document.exitPointerLock();
     mouse.lastX = null;
+    resultAt = wall;
+    clearInput(false);
   }
 
   // ------------------------------------------------------------ events → audio / fx
@@ -483,23 +537,50 @@ async function boot() {
         audio.play('gate'); audio.setLevel(1); cam.shake = 0.5;
         banner('莫三更', 'MO SANGENG · TWIN CROWS OF THE IRON EAVES');
         break;
-      case 'swing': audio.play('swing', { n: e.n }); break;
+      case 'swing': audio.play('swing', { n: e.n, heavy: e.heavy }); if (e.heavy) cam.shake = Math.max(cam.shake, 0.25); break;
       case 'clank': audio.play('blocked'); break;
+      case 'jump': audio.play('jump'); fx.steam(p.x, 0.1, p.z, 0, 0.5, 0, 0.3, 0.3, 0.16, 0x9fb0c4); break;
+      case 'land':
+        audio.play('land'); cam.shake = Math.max(cam.shake, 0.18);
+        for (let i = 0; i < 5; i++) { const a = Math.random() * 6.283; fx.steam(p.x + Math.cos(a) * 0.25, 0.08, p.z + Math.sin(a) * 0.25, Math.cos(a) * 1.3, 0.5, Math.sin(a) * 1.3, 0.2, 0.32, 0.12, 0x9fb0c4); }
+        break;
+      case 'jumpedOver': audio.play('dodged'); floater('跃过', 'dodge', p.x, 2.4 + p.y, p.z); break;
+      case 'chargeStart': audio.play('chargeStart'); break;
+      case 'charged':
+        audio.play('charged');
+        pr.blades[0].tip.getWorldPosition(hitPos);
+        fx.flash(hitPos, 0xbfeaff, 14, 1.6, 0.22); fx.sparks(hitPos, 0xdff6ff, 8, 3, 0.16);
+        floater('蓄满', 'perfect', p.x, 2.35, p.z);
+        break;
+      case 'chargeBreak': audio.play('chargeBreak'); break;
+      case 'drink': audio.play('drink'); break;
+      case 'heal':
+        audio.play('heal'); lastHp.p = -1;
+        floater('+' + e.amount, 'heal', p.x, 2.3, p.z);
+        hitPos.set(p.x, 1.2, p.z); fx.flash(hitPos, 0x8affc0, 22, 2.4, 0.4);
+        for (let i = 0; i < 6; i++) fx.steam(p.x + (Math.random() - 0.5) * 0.5, 0.4 + Math.random() * 0.8, p.z + (Math.random() - 0.5) * 0.5, 0, 0.9, 0, 0.5, 0.25, 0.12, 0x9affc8);
+        break;
+      case 'drinkFail':
+        audio.play('drinkFail'); flaskShake();
+        floater(e.reason === 'empty' ? '壶已空' : '气血已满', 'dull', p.x, 2.25, p.z);
+        break;
+      case 'drinkBreak': audio.play('chargeBreak'); floater('被打断', 'dull', p.x, 2.25, p.z); break;
       case 'bossHurt': {
         hitPos.set(b.x + (p.x - b.x) * 0.3, 1.35, b.z + (p.z - b.z) * 0.3);
+        if (e.heavy) { cam.shake = Math.max(cam.shake, 0.5); freeze = Math.max(freeze, 0.06); fx.sparks(hitPos, 0xdff6ff, 10, 8, 0.2); }
         if (e.punish) {
-          audio.play('punish');
+          audio.play('punish', { heavy: e.heavy });
           fx.sparks(hitPos, 0xffc84a, 12, 7, 0.2);
           fx.flash(hitPos, 0xffc040, 60, 3.2, 0.25);
           floater('破绽 ' + e.dmg, 'punish', b.x, 2.5, b.z);
           freeze = Math.max(freeze, 0.07); cam.shake = Math.max(cam.shake, 0.35);
         } else if (e.blocked) {
-          audio.play('blocked');
+          audio.play('blocked', { heavy: e.heavy });
           fx.sparks(hitPos, 0xbfe4ff, 5, 5, 0.1);
           fx.flash(hitPos, 0xa8d8ff, 14, 1.2, 0.12);
           floater('拨开 ' + e.dmg, 'dull', b.x, 2.3, b.z);
         } else {
-          audio.play('hit');
+          audio.play('hit', { heavy: e.heavy });
           fx.sparks(hitPos, 0xff9a6a, 7, 5, 0.13);
           fx.flash(hitPos, 0xffc8a0, 26, 1.8, 0.15);
           floater(String(e.dmg), 'dmg', b.x, 2.3, b.z);
@@ -541,7 +622,7 @@ async function boot() {
       case 'bossDead':
         audio.setLevel(3); audio.play('hiss', { d: 2 }); freeze = 0.14; slow = 1.3; cam.shake = 0.8;
         break;
-      case 'playerDead': audio.setLevel(3); slow = 0.9; break;
+      case 'playerDead': audio.setLevel(3); slow = 0.9; clearInput(false); break;
       case 'victory': audio.play('victory'); showResult(true); break;
       case 'defeat': audio.play('defeat'); showResult(false); break;
       default: break;
@@ -657,9 +738,12 @@ async function boot() {
     pr.blades[0].tip.getWorldPosition(gg.position);
     pr.blades[0].base.getWorldPosition(tmp);
     gg.position.lerp(tmp, 0.5);
-    const ga = p.guard ? (p.guardT < 0.2 ? 0.22 : 0.03) : 0;
+    // the same glow shows the charge building on the blade, and pulses once it is full
+    const chg = p.st === 'charge';
+    const cu = chg ? Math.min(1, p.chargeT / CHARGE.full) : 0;
+    const ga = chg ? (p.charged ? 0.2 + 0.08 * Math.sin(time * 26) : 0.03 + 0.1 * cu) : p.guard ? (p.guardT < 0.2 ? 0.22 : 0.03) : 0;
     gg.material.opacity += (ga - gg.material.opacity) * Math.min(1, dt * 20);
-    gg.scale.setScalar(p.guard && p.guardT < 0.2 ? 0.55 : 0.4);
+    gg.scale.setScalar(chg ? 0.25 + 0.2 * cu + (p.charged ? 0.06 : 0) : p.guard && p.guardT < 0.2 ? 0.55 : 0.4);
     gg.visible = gg.material.opacity > 0.02;
   }
 
@@ -681,11 +765,13 @@ async function boot() {
     const inp = {
       mx: fxv * iz + -fzv * ix,
       mz: fzv * iz + fxv * ix,
-      attack: edge.attack, dodge: edge.dodge,
+      attack: edge.attack, dodge: edge.dodge, jump: edge.jump, drink: edge.drink,
+      // keyboard and mouse behave identically: a press is the edge, the hold is the level
+      attackHeld: keys.has('KeyJ') || mouse.attack,
       guard: mouse.guard || keys.has('KeyK'),
       lock: cam.lock,
     };
-    edge.attack = false; edge.dodge = false;
+    edge.attack = false; edge.dodge = false; edge.jump = false; edge.drink = false;
     return inp;
   }
   function frame(now) {
@@ -711,6 +797,7 @@ async function boot() {
     visTime += vdt;
     updateVisuals(Math.max(vdt, g.mode === 'fight' ? 0 : real), visTime);
     updateCamera(real);
+    if (frames % 6 === 0) audio.listener(g.player.x, g.player.z, cam.yaw + cam.avoid);
     world.update(real, wall, g.gateClosed, camera.position);
     fx.update(real, wall, camera);
     updateHud();
@@ -727,7 +814,12 @@ async function boot() {
       return {
         mode: g.mode, time: g.time, engaged: g.engaged, gateClosed: g.gateClosed, fights: g.fights,
         backend, frames, fps: +fps.toFixed(1), paused, quality: opts.quality,
-        player: { x: p.x, z: p.z, yaw: p.yaw, hp: p.hp, maxHp: p.maxHp, st: p.st, combo: p.combo, guard: p.guard, inv: p.inv, dodgeCd: p.dodgeCd },
+        player: {
+          x: p.x, z: p.z, yaw: p.yaw, hp: p.hp, maxHp: p.maxHp, st: p.st, combo: p.combo, guard: p.guard, inv: p.inv, dodgeCd: p.dodgeCd,
+          y: p.y, vy: p.vy, flask: p.flask, maxFlask: p.maxFlask, chargeT: p.chargeT, charged: p.charged,
+        },
+        audio: { started: audio.started, state: audio.state, muted: audio.muted, paused: audio.paused, time: audio.time, zones: audio.zones },
+        config: { jump: JUMP, charge: CHARGE, heavy: HEAVY, flask: FLASK },
         boss: {
           x: b.x, z: b.z, yaw: b.yaw, hp: b.hp, maxHp: b.maxHp, phase: b.phase, st: b.st,
           move: b.move ? b.move.name : null, seg: s ? s.k : null, tele: s ? s.tele || null : null, hitIn: hitIn(b),
@@ -742,6 +834,79 @@ async function boot() {
     },
     events(sinceT = -1) { return g.log.filter((e) => e.t > sinceT).map((e) => ({ ...e })); },
   });
+
+  // ------------------------------------------------------------ recording hook (#rec only)
+  // Records what a player sees and hears: the canvas plus the game's output after mute/pause.
+  // It only observes; all actions still come from real input.
+  if (opts.rec) {
+    const b64 = (buf) => { const u = new Uint8Array(buf); let s = ''; for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000)); return btoa(s); };
+    let mr = null, chunks = [];
+    const stats = (c) => {
+      let peak = 0, sum = 0, clip = 0;
+      const n = c.left.length;
+      for (let i = 0; i < n; i++) {
+        const a = Math.abs(c.left[i]), bb = Math.abs(c.right[i]);
+        const m = Math.max(a, bb);
+        if (m > peak) peak = m;
+        if (m >= 0.999) clip++;
+        sum += (c.left[i] * c.left[i] + c.right[i] * c.right[i]) / 2;
+      }
+      const db = (v) => (v > 0 ? +(20 * Math.log10(v)).toFixed(1) : -Infinity);
+      const rms = Math.sqrt(sum / Math.max(1, n));
+      return { seconds: +(n / c.sampleRate).toFixed(2), sampleRate: c.sampleRate, peak: +peak.toFixed(5), peakDb: db(peak), rms: +rms.toFixed(6), rmsDb: db(rms), clipped: clip };
+    };
+    const wav = (c) => {
+      const n = c.left.length;
+      const buf = new ArrayBuffer(44 + n * 4);
+      const v = new DataView(buf);
+      const str = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+      str(0, 'RIFF'); v.setUint32(4, 36 + n * 4, true); str(8, 'WAVEfmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 2, true);
+      v.setUint32(24, c.sampleRate, true); v.setUint32(28, c.sampleRate * 4, true); v.setUint16(32, 4, true); v.setUint16(34, 16, true); str(36, 'data'); v.setUint32(40, n * 4, true);
+      for (let i = 0; i < n; i++) {
+        v.setInt16(44 + i * 4, Math.max(-1, Math.min(1, c.left[i])) * 32767, true);
+        v.setInt16(46 + i * 4, Math.max(-1, Math.min(1, c.right[i])) * 32767, true);
+      }
+      return buf;
+    };
+    window.__rec = {
+      videoStart(bits = 1600000) {
+        const stream = renderer.domElement.captureStream(30);
+        const a = audio.stream();
+        if (a) for (const t of a.getAudioTracks()) stream.addTrack(t);
+        chunks = [];
+        const type = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'].find((m) => MediaRecorder.isTypeSupported(m));
+        mr = new MediaRecorder(stream, { mimeType: type, videoBitsPerSecond: bits, audioBitsPerSecond: 96000 });
+        mr.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+        mr.start(500);
+        return { type, audioTracks: stream.getAudioTracks().length };
+      },
+      videoStop() {
+        return new Promise((res) => {
+          mr.onstop = async () => {
+            const blob = new Blob(chunks, { type: 'video/webm' });
+            const buf = await blob.arrayBuffer();
+            // decode the clip's own audio track again, to prove it is there and not silent
+            let track = null;
+            try {
+              const ac = new (window.OfflineAudioContext || window.webkitOfflineAudioContext)(2, 48000, 48000);
+              const d = await ac.decodeAudioData(buf.slice(0));
+              const l = d.getChannelData(0), r = d.numberOfChannels > 1 ? d.getChannelData(1) : l;
+              track = stats({ left: l, right: r, sampleRate: d.sampleRate });
+              track.channels = d.numberOfChannels;
+            } catch (e) { track = { error: String(e && e.message ? e.message : e) }; }
+            res({ size: blob.size, track, data: b64(buf) });
+          };
+          mr.stop();
+        });
+      },
+      captureStart(bus) { return audio.captureStart(bus); },
+      captureStop(withWav) {
+        const c = audio.captureStop();
+        if (!c) return null;
+        return { stats: stats(c), wav: withWav ? b64(wav(c)) : null };
+      },
+    };
+  }
 
   updateVisuals(0.016, 0);
   renderer.setAnimationLoop(frame);

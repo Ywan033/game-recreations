@@ -21,7 +21,9 @@ const argv = process.argv.slice(2);
 const tag = argv.find((a) => a === 'before' || a === 'after') || 'after';
 const review = argv.includes('review');
 const forceGL = argv.includes('gl');
-const outDir = path.join(root, 'compare');
+// "controls" writes the set for the controls/motion/audio pass to compare/controls/ and leaves
+// the earlier evidence directly under compare/ untouched.
+const outDir = argv.includes('controls') ? path.join(root, 'compare', 'controls') : path.join(root, 'compare');
 const reviewDir = path.join(root, 'test-results', 'review');
 fs.mkdirSync(outDir, { recursive: true });
 if (review) fs.mkdirSync(reviewDir, { recursive: true });

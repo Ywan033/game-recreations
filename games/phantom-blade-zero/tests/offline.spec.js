@@ -136,7 +136,12 @@ test('opening: start screen renders, lists controls, starts by mouse click', asy
   await expect(page).toHaveTitle(/雨巷双刃/);
   await expect(page.locator('#title h1')).toHaveText('雨巷双刃');
   const controls = await page.locator('#controls').innerText();
-  for (const k of ['W A S D', 'J', 'K', 'Space', 'Enter']) expect(controls).toContain(k);
+  for (const k of ['W A S D', 'J', 'K', 'Space', 'Enter', 'Left Shift', 'R', '跳跃', '蓄力', '药壶']) expect(controls).toContain(k);
+  expect(controls).not.toMatch(/Space\s*\/\s*L/); // Space is no longer a dodge key
+  const tb = await page.locator('#title').boundingBox();
+  const btn = await page.locator('#startbtn').boundingBox();
+  expect(btn.y + btn.height, 'start button fits on a 720p screen').toBeLessThanOrEqual(720);
+  expect(tb.height).toBeLessThanOrEqual(720);
   const body = await page.locator('body').innerText();
   expect(body.toLowerCase()).not.toContain('phantom');
   await sleep(600);
@@ -344,7 +349,7 @@ test('combo hits, guard reduces damage, dodge avoids a hit, punish bonus', async
   console.log('unguarded hit', rawEv);
   expect(rawEv.dmg).toBe(rawEv.raw);
 
-  // --- dodge: sidestep with Space just before a hit lands
+  // --- dodge: sidestep with Left Shift just before a hit lands
   since = (await snap()).time;
   let dodgedEv = null;
   let hpAt = null;
@@ -353,7 +358,7 @@ test('combo hits, guard reduces damage, dodge avoids a hit, punish bonus', async
     if (d > 2.4 && s.boss.st !== 'attack') await hold('KeyW'); else await release('KeyW');
     if (s.boss.st === 'attack' && s.boss.hitIn >= 0 && s.boss.hitIn < 0.11 && s.player.st === 'idle' && s.player.dodgeCd <= 0) {
       hpAt = s.player.hp;
-      await page.keyboard.press('Space');
+      await page.keyboard.press('ShiftLeft');
     }
     const ev = await events(since);
     dodgedEv = ev.find((e) => e.type === 'dodged');
@@ -507,7 +512,14 @@ test('phase-two transition, changed behaviour, victory, retry by key', async ({ 
   console.log('follow-ups seen', all.filter((e) => e.type === 'followUp').map((e) => e.follow));
 
   // finish the fight
+  // (one flask charge is drunk on the way, so the retry below has something to restore)
   await until(async (s) => {
+    if (s.mode === 'fight' && s.player.flask === s.player.maxFlask && s.player.hp < s.player.maxHp && s.boss.st === 'recover' && s.player.st === 'idle' && s.boss.hp > 30) {
+      await releaseAll();
+      await page.keyboard.press('KeyR');
+      await sleep(750);
+      return false;
+    }
     if (s.mode === 'fight') await fightStep(s, { attack: 'always' });
     return s.mode === 'victory';
   }, 200000, 'victory', 15);
@@ -518,12 +530,18 @@ test('phase-two transition, changed behaviour, victory, retry by key', async ({ 
   const v = await snap();
   expect(v.boss.hp).toBe(0);
   expect(v.player.hp).toBeGreaterThan(0);
+  console.log(`flask at victory: ${v.player.flask}/${v.player.maxFlask}, heals ${v.stats.heals}`);
+  expect(v.player.flask).toBe(v.player.maxFlask - v.stats.heals);
+  expect(v.stats.heals).toBeGreaterThanOrEqual(1);
 
-  // retry with the keyboard
+  // retry with the keyboard (on the result screen R is retry and cannot drink)
+  await sleep(700);
   await page.keyboard.press('KeyR');
   const r = await until((s) => s.mode === 'fight', 5000, 'retry');
   await expect(page.locator('#result')).toBeHidden();
   expect(r.fights).toBe(2);
+  expect(r.player.flask, 'retry restores the flask').toBe(r.player.maxFlask);
+  expect(r.stats.heals + r.stats.drinkFails, 'the retry press was not taken as a drink').toBe(0);
   expect(r.player.hp).toBe(r.player.maxHp);
   expect(r.boss.hp).toBe(r.boss.maxHp);
   expect(r.boss.phase).toBe(1);
@@ -547,9 +565,12 @@ test('defeat screen, retry by mouse, mouse buttons attack and guard', async ({ b
   expect(d.player.hp).toBe(0);
   expect(d.boss.hp).toBeGreaterThan(0);
 
+  // R on the result screen is retry only: it must not act in the instant the screen appears,
+  // and the Enter key / button remain. Use the button here (R is used in the victory test).
   await page.locator('#retrybtn').click(); // real mouse click
   const r = await until((s) => s.mode === 'fight', 5000, 'retry');
   await expect(page.locator('#result')).toBeHidden();
+  expect(r.player.flask).toBe(r.player.maxFlask);
   expect(r.player.hp).toBe(r.player.maxHp);
   expect(r.boss.hp).toBe(r.boss.maxHp);
   expect(r.fights).toBe(2);
@@ -573,6 +594,333 @@ test('defeat screen, retry by mouse, mouse buttons attack and guard', async ({ b
   expect(p1.time).toBe(p0.time);
   await page.keyboard.press('KeyP');
   await until((s) => s.time > p1.time, 3000, 'unpaused');
+});
+
+const count = (ev, type, f) => ev.filter((e) => e.type === type && (!f || f(e))).length;
+
+test('controls: Left Shift dodges, Space jumps, tap/hold attack, pause cleanup, audio start/mute/pause', async ({ browser }) => {
+  await open(browser, 'seed=5&q=low');
+  const pre = await snap();
+  expect(pre.audio.started, 'no audio before the first user gesture').toBe(false);
+  await page.keyboard.press('Enter');
+  await until((s) => s.mode === 'fight', 5000, 'fight');
+  // audio unlocks on that first gesture and its clock runs
+  const a0 = await until((s) => s.audio.started && s.audio.state === 'running', 5000, 'audio running after the first gesture');
+  await sleep(300);
+  expect((await snap()).audio.time).toBeGreaterThan(a0.audio.time);
+  await hold('KeyW');
+  await until((s) => s.player.z < 12.5, 8000, 'into the lane');
+  await release('KeyW');
+  await until((s) => s.player.st === 'idle', 2000, 'idle');
+  let t0 = (await snap()).time;
+
+  // Left Shift = dodge, and it does not jump
+  await page.keyboard.press('ShiftLeft');
+  await until((s) => s.player.st === 'dodge', 2000, 'ShiftLeft dodges');
+  let maxY = 0;
+  await until((s) => { maxY = Math.max(maxY, s.player.y); return s.player.st === 'idle' && s.player.dodgeCd <= 0; }, 3000, 'dodge ends');
+  let ev = await events(t0);
+  expect(count(ev, 'dodge')).toBe(1);
+  expect(count(ev, 'jump')).toBe(0);
+  expect(maxY).toBe(0);
+  // Right Shift is not bound
+  await page.keyboard.press('ShiftRight');
+  await sleep(250);
+  expect(count(await events(t0), 'dodge')).toBe(1);
+
+  // Space = jump (held for the whole flight and beyond: exactly one jump), and it does not dodge
+  t0 = (await snap()).time;
+  const seen = new Set();
+  await hold('Space');
+  maxY = 0;
+  // (wait on the simulation, not the wall clock: software rendering can run slower than real time)
+  await until((s) => { seen.add(s.player.st); maxY = Math.max(maxY, s.player.y); return seen.has('air') && s.player.st === 'idle' && s.player.y === 0; }, 15000, 'jump and land', 8);
+  const tLand = (await snap()).time;
+  await until((s) => { seen.add(s.player.st); return s.time > tLand + 0.8; }, 15000, 'Space still held after landing', 8);
+  await release('Space');
+  const afterJump = await snap();
+  ev = await events(t0);
+  console.log(`jump: peak height ${maxY.toFixed(2)} m, states seen ${[...seen].join(',')}`);
+  expect(count(ev, 'jump'), 'holding Space jumps once').toBe(1);
+  expect(count(ev, 'land')).toBe(1);
+  expect(count(ev, 'dodge'), 'Space no longer dodges').toBe(0);
+  expect(maxY).toBeGreaterThan(0.6);
+  expect(maxY).toBeLessThan(1.4);
+  expect(seen.has('air')).toBe(true);
+  expect(afterJump.player.y).toBe(0);
+  expect(afterJump.player.st).toBe('idle');
+  expect(afterJump.stats.jumps).toBe(1);
+  // jump while running forward: keeps moving, stays inside the lane, input works after landing
+  await hold('KeyW');
+  await sleep(250);
+  const zRun = (await snap()).player.z;
+  await page.keyboard.press('Space');
+  await until((s) => s.player.st === 'air', 2000, 'running jump');
+  await shot('12-jump');
+  await until((s) => s.player.st === 'idle' && s.player.y === 0, 3000, 'lands');
+  const zLand = (await snap()).player.z;
+  expect(zLand).toBeLessThan(zRun - 1.5);
+  await release('KeyW');
+  expect(Math.abs((await snap()).player.x)).toBeLessThanOrEqual(1.6 - 0.45 + 1e-6);
+  // walk back up the lane so the swings below (which step forward) stay clear of the yard
+  await hold('KeyS');
+  await until((s) => s.player.z > 13.5, 15000, 'back up the lane');
+  await release('KeyS');
+  expect((await snap()).engaged).toBe(false);
+
+  // attack key, short press: one light cut and no charge
+  await until((s) => s.player.st === 'idle', 2000, 'idle');
+  t0 = (await snap()).time;
+  let st0 = (await snap()).stats;
+  await page.keyboard.press('KeyJ');
+  await until((s) => s.stats.swings === st0.swings + 1, 2000, 'tap swings');
+  await until((s) => s.player.st === 'idle', 3000, 'swing ends');
+  ev = await events(t0);
+  expect(count(ev, 'swing')).toBe(1);
+  expect(count(ev, 'chargeStart')).toBe(0);
+  expect((await snap()).stats.heavies).toBe(0);
+  // repeated short presses: the 3-step combo
+  t0 = (await snap()).time;
+  for (let i = 0; i < 3; i++) {
+    await page.keyboard.press('KeyJ');
+    const sw = await until((s) => s.player.st === 'attack' && s.player.combo === i, 3000, 'combo step ' + (i + 1), 8);
+    await until((s) => s.time > sw.time + 0.07, 3000, 'a moment into the swing', 8); // paced in simulation time
+  }
+  await until((s) => s.player.st === 'idle', 4000, 'combo ends');
+  ev = await events(t0);
+  expect(ev.filter((e) => e.type === 'swing').map((e) => e.n)).toEqual([1, 2, 3]);
+  expect((await snap()).stats.heavies).toBe(0);
+
+  // hold to charge, release for the heavy: keyboard, then mouse (identical behaviour)
+  for (const dev of ['key', 'mouse']) {
+    t0 = (await snap()).time;
+    st0 = (await snap()).stats;
+    if (dev === 'key') await hold('KeyJ'); else { await page.mouse.move(640, 300); await page.mouse.down(); }
+    await until((s) => s.player.st === 'charge', 2000, dev + ' hold enters the charge');
+    await until((s) => s.player.charged, 3000, dev + ' fully charged');
+    await expect(page.locator('#charge')).toHaveClass(/full/);
+    if (dev === 'key') await shot('13-charged');
+    await sleep(150);
+    expect((await snap()).player.st, 'the charge is held until release').toBe('charge');
+    if (dev === 'key') await release('KeyJ'); else await page.mouse.up();
+    await until((s) => s.player.st === 'heavy', 2000, dev + ' release swings the heavy');
+    await until((s) => s.player.st === 'idle', 4000, 'heavy recovers');
+    ev = await events(t0);
+    const s1 = await snap();
+    expect(count(ev, 'charged')).toBe(1);
+    expect(ev.filter((e) => e.type === 'swing').map((e) => !!e.heavy), dev + ': one wind-up, one heavy, no light cut').toEqual([false, true]);
+    expect(s1.stats.heavies).toBe(st0.heavies + 1);
+    expect(s1.stats.swings).toBe(st0.swings + 1);
+    expect(s1.player.chargeT).toBe(0);
+    await expect(page.locator('#charge')).not.toHaveClass(/on/);
+  }
+  // released before the charge is full: just the one light cut
+  t0 = (await snap()).time;
+  st0 = (await snap()).stats;
+  await hold('KeyJ');
+  await until((s) => s.player.st === 'charge', 2000, 'charging');
+  await release('KeyJ');
+  await until((s) => s.player.st === 'idle', 3000, 'idle after an early release');
+  ev = await events(t0);
+  expect(count(ev, 'charged')).toBe(0);
+  expect(count(ev, 'swing')).toBe(1);
+  expect((await snap()).stats.heavies).toBe(st0.heavies);
+
+  // state cleanup: pausing mid-charge drops the charge; releasing afterwards swings nothing
+  t0 = (await snap()).time;
+  st0 = (await snap()).stats;
+  await hold('KeyJ');
+  await until((s) => s.player.st === 'charge' && s.player.chargeT > 0.15, 3000, 'charging before the pause');
+  await page.keyboard.press('KeyP');
+  const pz = await until((s) => s.paused, 2000, 'paused');
+  expect(pz.player.st).toBe('idle');
+  expect(pz.player.chargeT).toBe(0);
+  // audio stops with the pause
+  await until((s) => s.audio.paused && s.audio.state === 'suspended', 3000, 'audio suspended while paused');
+  const at = (await snap()).audio.time;
+  await sleep(300);
+  expect((await snap()).audio.time).toBe(at);
+  // keys pressed while paused do nothing later
+  await page.keyboard.press('Space');
+  await page.keyboard.press('KeyR');
+  await page.keyboard.press('ShiftLeft');
+  await page.keyboard.press('KeyP');
+  await until((s) => !s.paused && s.audio.state === 'running', 3000, 'resumed with audio running');
+  await sleep(150);
+  await release('KeyJ');
+  await sleep(500);
+  ev = await events(t0);
+  const sC = await snap();
+  expect(sC.audio.time).toBeGreaterThan(at);
+  expect(sC.stats.heavies).toBe(st0.heavies);
+  expect(count(ev, 'swing')).toBe(1); // only the wind-up that began the charge
+  expect(count(ev, 'jump') + count(ev, 'dodge') + count(ev, 'drinkFail')).toBe(0);
+  expect(sC.player.st).toBe('idle');
+
+  // mute and unmute (M)
+  await page.keyboard.press('KeyM');
+  expect((await snap()).audio.muted).toBe(true);
+  await expect(page.locator('#status')).toContainText('MUTED');
+  await page.keyboard.press('KeyM');
+  expect((await snap()).audio.muted).toBe(false);
+
+  // flask at full health: refused with feedback, nothing spent; R does not restart the fight
+  t0 = (await snap()).time;
+  await page.keyboard.press('KeyR');
+  await until(async () => count(await events(t0), 'drinkFail') === 1, 2000, 'full-health refusal');
+  await expect(page.locator('#flask')).toHaveClass(/deny/);
+  const sF = await snap();
+  expect(sF.player.flask).toBe(sF.player.maxFlask);
+  expect(sF.mode).toBe('fight');
+  expect(sF.fights).toBe(1);
+  await expect(page.locator('#flaskcount')).toHaveText(`${sF.player.maxFlask}/${sF.player.maxFlask}`);
+});
+
+test('flask heals once per drink, capped; hits interrupt a drink and a charge; empty flask; jump camera in the fight', async ({ browser }) => {
+  await open(browser, 'seed=11&php=4&bhp=8&q=low');
+  await startAndEnter();
+  await until((s) => s.boss.st === 'idle' || s.boss.st === 'attack', 6000, 'boss active');
+  const S0 = await snap();
+  const maxHp = S0.player.maxHp, maxFlask = S0.player.maxFlask;
+  const healAmt = Math.round(maxHp * S0.config.flask.healFrac);
+  const near = (s) => Math.hypot(s.player.x - s.boss.x, s.player.z - s.boss.z);
+  const approach = async (s) => { if (near(s) > 2.4 && s.boss.st !== 'attack') await hold('KeyW'); else await release('KeyW'); };
+
+  // --- jump in the fight, locked on: the camera rises only a little and stays inside
+  let base = (await snap()).cam.y, rise = 0, inB = true, peak = 0;
+  await page.keyboard.press('Space');
+  let tj = Date.now();
+  while (Date.now() - tj < 900) { const s = await snap(); rise = Math.max(rise, s.cam.y - base); peak = Math.max(peak, s.player.y); inB = inB && s.cam.inBounds; await sleep(10); }
+  console.log(`locked-on jump: player peak ${peak.toFixed(2)} m, camera rise ${rise.toFixed(2)} m`);
+  expect(peak).toBeGreaterThan(0.5);
+  expect(rise).toBeLessThan(0.6);
+  expect(inB).toBe(true);
+
+  // --- a hit interrupts the charge: hold J as an attack comes in, keep holding afterwards
+  let since = (await snap()).time;
+  let st0 = (await snap()).stats;
+  let broke = null;
+  await until(async (s) => {
+    await approach(s);
+    const ev = await events(since);
+    broke = ev.find((e) => e.type === 'chargeBreak');
+    if (broke) return true;
+    if (s.boss.st === 'attack' && s.boss.hitIn >= 0 && s.boss.hitIn < 0.75 && near(s) < 2.7 && s.player.st === 'idle') await hold('KeyJ');
+    if (s.boss.st !== 'attack' && (s.player.st === 'charge' || s.player.st === 'heavy')) await release('KeyJ'); // wrong moment: let go
+    return false;
+  }, 120000, 'a charge broken by a hit', 12);
+  await sleep(700); // J is still held: nothing may start from it
+  let ev = await events(since);
+  const hurtAt = ev.find((e) => e.type === 'playerHurt' && Math.abs(e.t - broke.t) < 0.02);
+  const after = ev.filter((e) => e.t > broke.t && (e.type === 'swing' || e.type === 'chargeStart'));
+  console.log('charge broken at', broke.t, 'by', hurtAt && hurtAt.move);
+  expect(hurtAt, 'the break coincides with a hit').toBeTruthy();
+  expect(after, 'holding through the hit starts no swing').toEqual([]);
+  expect((await snap()).player.chargeT).toBe(0);
+  await releaseAll();
+  await sleep(200);
+  expect(count(await events(broke.t), 'swing')).toBe(0);
+
+  // --- a hit interrupts a drink before the sip: no charge spent, no heal
+  since = (await snap()).time;
+  let brk = null;
+  let tries = 0;
+  await until(async (s) => {
+    await approach(s);
+    const e2 = await events(since);
+    brk = e2.find((e) => e.type === 'drinkBreak');
+    if (brk) return true;
+    if (s.player.hp < maxHp && s.player.flask === maxFlask && s.boss.st === 'attack' && s.boss.hitIn >= 0.05 && s.boss.hitIn < 0.4 && near(s) < 2.6 && s.player.st === 'idle') {
+      tries++;
+      await page.keyboard.press('KeyR');
+      await sleep(120);
+    }
+    return false;
+  }, 150000, 'a drink broken by a hit', 12);
+  ev = await events(since);
+  const sB = await snap();
+  console.log(`drink interrupted (${tries} presses); flask ${sB.player.flask}/${maxFlask}; heals so far ${count(ev, 'heal')}`);
+  expect(brk.left).toBe(maxFlask - count(ev, 'heal', (e) => e.t < brk.t));
+  expect(sB.player.flask).toBe(maxFlask - count(ev, 'heal'));
+  expect(ev.some((e) => e.type === 'playerHurt' && Math.abs(e.t - brk.t) < 0.02)).toBe(true);
+  expect(ev.some((e) => e.type === 'heal' && Math.abs(e.t - brk.t) < 0.02)).toBe(false);
+  await releaseAll();
+
+  // --- drinks: R (held down) after taking damage heals exactly once per press, never above max
+  let drinks = 0;
+  let guardUntil = 0;
+  while ((await snap()).player.flask > 0) {
+    const f0 = (await snap()).player.flask;
+    since = (await snap()).time;
+    let healEv = null;
+    let hp0 = null;
+    await until(async (s) => {
+      const e2 = await events(since);
+      healEv = e2.find((e) => e.type === 'heal');
+      if (healEv) return true;
+      if (s.player.st === 'drink') { await release('KeyW'); return false; }
+      await release('KeyR');
+      // take a hit if at full health, otherwise guard until the boss is recovering, then drink
+      if (s.player.hp >= maxHp) { await release('KeyK'); await approach(s); return false; }
+      if (s.boss.st === 'attack') { await release('KeyW'); await hold('KeyK'); guardUntil = Date.now() + 60; return false; }
+      if (Date.now() > guardUntil) await release('KeyK');
+      if (s.boss.st === 'recover' && s.player.st === 'idle' && !s.player.guard) { hp0 = s.player.hp; await hold('KeyR'); } // R stays down
+      return false;
+    }, 150000, 'a completed drink', 12);
+    await sleep(900); // R is still held: it must not repeat
+    await release('KeyR');
+    const e3 = await events(since);
+    const s2 = await snap();
+    drinks++;
+    console.log(`drink ${drinks}: +${healEv.amount} -> ${healEv.hp}/${maxHp}, flask ${healEv.left}`);
+    expect(count(e3, 'heal'), 'one heal per press, even when held').toBe(1);
+    expect(healEv.left).toBe(f0 - 1);
+    expect(s2.player.flask).toBe(f0 - 1);
+    expect(healEv.amount).toBeGreaterThan(0);
+    expect(healEv.amount).toBeLessThanOrEqual(healAmt);
+    expect(healEv.hp).toBeLessThanOrEqual(maxHp);
+    if (hp0 !== null && hp0 + healAmt > maxHp) expect(healEv.hp === maxHp || healEv.amount < healAmt).toBe(true);
+    await expect(page.locator('#flaskcount')).toHaveText(`${f0 - 1}/${maxFlask}`);
+    if (drinks === 1) await shot('14-after-drink');
+  }
+  expect(drinks).toBeGreaterThanOrEqual(1);
+  await releaseAll();
+
+  // --- empty flask: refused with feedback, nothing healed
+  since = (await snap()).time;
+  let fail = null;
+  let hpBefore = null;
+  await until(async (s) => {
+    const e2 = await events(since);
+    fail = e2.find((e) => e.type === 'drinkFail');
+    if (fail) return true;
+    if (s.player.hp >= maxHp) { await release('KeyK'); await approach(s); return false; }
+    if (s.boss.st === 'attack') { await release('KeyW'); await hold('KeyK'); return false; }
+    await release('KeyK');
+    if (s.player.st === 'idle') { hpBefore = s.player.hp; await page.keyboard.press('KeyR'); await sleep(60); }
+    return false;
+  }, 120000, 'empty-flask refusal', 12);
+  await releaseAll();
+  expect(fail.reason).toBe('empty');
+  const sE = await snap();
+  expect(sE.player.flask).toBe(0);
+  expect(count(await events(since), 'heal')).toBe(0);
+  expect(sE.player.hp).toBeLessThanOrEqual(hpBefore);
+  await expect(page.locator('#flask')).toHaveClass(/empty/);
+  expect(sE.mode).toBe('fight');
+  expect(sE.fights).toBe(1);
+
+  // --- jump with the back to a wall, mid-fight: camera stays inside and does not pop
+  await hold('KeyS');
+  await sleep(3500);
+  base = (await snap()).cam.y; rise = 0; inB = true;
+  await page.keyboard.press('Space');
+  tj = Date.now();
+  while (Date.now() - tj < 900) { const s = await snap(); rise = Math.max(rise, s.cam.y - base); inB = inB && s.cam.inBounds; await sleep(10); }
+  await releaseAll();
+  console.log(`near-wall jump: camera rise ${rise.toFixed(2)} m, in bounds ${inB}`);
+  expect(rise).toBeLessThan(0.7);
+  expect(inB).toBe(true);
 });
 
 test('WebGPU backend renders and plays (skipped without a hardware WebGPU adapter)', async () => {

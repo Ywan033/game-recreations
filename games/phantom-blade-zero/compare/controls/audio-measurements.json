@@ -1,0 +1,184 @@
+{
+  "browser": "full Chromium build (GPU flags)",
+  "note": "Measured from the captured signal; not listened to by a person.",
+  "backend": "webgpu",
+  "ambienceAloneLaneOutput": {
+    "seconds": 5.97,
+    "sampleRate": 48000,
+    "peak": 0.13663,
+    "peakDb": -17.3,
+    "rms": 0.018213,
+    "rmsDb": -34.8,
+    "clipped": 0,
+    "zones": {
+      "lane": 1,
+      "eave": 0,
+      "cover": 0.85,
+      "open": 0.15000000000000002
+    }
+  },
+  "ambienceWav": {
+    "file": "compare/controls/ambience.wav",
+    "bus": "rain bus after ducking/tone filter, before master",
+    "seconds": 20.99,
+    "sampleRate": 48000,
+    "peak": 0.13311,
+    "peakDb": -17.5,
+    "rms": 0.015248,
+    "rmsDb": -36.3,
+    "clipped": 0,
+    "walk": [
+      {
+        "label": "deep lane",
+        "x": 0,
+        "z": 14.5,
+        "lane": 1,
+        "eave": 0,
+        "cover": 0.85,
+        "open": 0.15
+      },
+      {
+        "label": "lane mouth (open yard side)",
+        "x": 0,
+        "z": 7.57,
+        "lane": 0.08,
+        "eave": 0,
+        "cover": 0.07,
+        "open": 0.93
+      },
+      {
+        "label": "under the lane eave (wall side)",
+        "x": 1.15,
+        "z": 11.53,
+        "lane": 1,
+        "eave": 0,
+        "cover": 0.85,
+        "open": 0.15
+      },
+      {
+        "label": "far end of the lane",
+        "x": 1.15,
+        "z": 16.66,
+        "lane": 1,
+        "eave": 0,
+        "cover": 0.85,
+        "open": 0.15
+      }
+    ]
+  },
+  "withCombatCuesOutput": {
+    "seconds": 26.03,
+    "sampleRate": 48000,
+    "peak": 0.68238,
+    "peakDb": -3.3,
+    "rms": 0.044419,
+    "rmsDb": -27,
+    "clipped": 0,
+    "eventsDuringFight": {
+      "start": 1,
+      "engage": 1,
+      "bossMove": 7,
+      "tele": 10,
+      "guardUp": 7,
+      "bossSwing": 13,
+      "playerHurt": 13,
+      "recover": 6,
+      "swing": 18,
+      "bossHurt": 18
+    }
+  },
+  "rainBusDuringCombat": {
+    "seconds": 8.96,
+    "sampleRate": 48000,
+    "peak": 0.07377,
+    "peakDb": -22.6,
+    "rms": 0.013317,
+    "rmsDb": -37.5,
+    "clipped": 0,
+    "zones": {
+      "lane": 0,
+      "eave": 0,
+      "cover": 0,
+      "open": 1
+    }
+  },
+  "muted": {
+    "seconds": 2.47,
+    "sampleRate": 48000,
+    "peak": 0,
+    "peakDb": null,
+    "rms": 0,
+    "rmsDb": null,
+    "clipped": 0,
+    "audio": {
+      "started": true,
+      "state": "running",
+      "muted": true,
+      "paused": false,
+      "time": 68.32,
+      "zones": {
+        "lane": 0,
+        "eave": 0,
+        "cover": 0,
+        "open": 1
+      }
+    }
+  },
+  "paused": {
+    "seconds": 0,
+    "sampleRate": 48000,
+    "peak": 0,
+    "peakDb": null,
+    "rms": 0,
+    "rmsDb": null,
+    "clipped": 0,
+    "audioState": "suspended",
+    "audioClockAdvanced": 0
+  },
+  "resumed": {
+    "seconds": 1.96,
+    "sampleRate": 48000,
+    "peak": 0.46948,
+    "peakDb": -6.6,
+    "rms": 0.028495,
+    "rmsDb": -30.9,
+    "clipped": 0
+  },
+  "fpsMeasure": 173.1,
+  "gameplayClip": {
+    "file": "compare/controls/gameplay.webm",
+    "bytes": 4015219,
+    "mime": "video/webm;codecs=vp9,opus",
+    "audioTracksAtStart": 1,
+    "decodedAudioTrack": {
+      "seconds": 25.2,
+      "sampleRate": 48000,
+      "peak": 0.71872,
+      "peakDb": -2.9,
+      "rms": 0.059173,
+      "rmsDb": -24.6,
+      "clipped": 0,
+      "channels": 2
+    },
+    "seconds": 25.4,
+    "shown": {
+      "jump": true,
+      "drinkShot": true,
+      "drink": true,
+      "boss": true,
+      "chargedShot": true,
+      "heavy": true
+    },
+    "stats": {
+      "jumps": 1,
+      "heavies": 1,
+      "heavyHits": 1,
+      "heals": 1,
+      "bossMoves": 6,
+      "hurt": 4
+    },
+    "backend": "webgpu",
+    "fpsMedian": 141.2,
+    "fpsMin": 111.8
+  }
+}

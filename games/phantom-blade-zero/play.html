@@ -97,6 +97,30 @@
   .fl.perfect { color: #eaffff; font-size: 30px; text-shadow: 0 0 14px #5ad8ff, 0 0 4px #000; }
   .fl.dodge { color: #cfe6ff; font-size: 20px; }
   .fl.hurt { color: #ff6a4c; font-family: Georgia, serif; font-size: 26px; }
+  .fl.heal { color: #9af0b8; font-family: Georgia, serif; font-size: 26px; text-shadow: 0 0 12px #1f9a5a, 0 0 4px #000; }
+  #flask { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 14px; letter-spacing: 2px;
+    text-shadow: 0 0 6px #000, 0 2px 2px #000; }
+  #flask b { color: var(--brass); font-family: Consolas, monospace; font-weight: normal; border: 1px solid rgba(201,162,90,.7);
+    padding: 0 5px; background: rgba(4,6,10,.6); }
+  #flaskpips { display: flex; gap: 5px; }
+  #flaskpips i { width: 11px; height: 16px; border: 1px solid rgba(201,162,90,.8); border-radius: 5px 5px 6px 6px / 4px 4px 9px 9px;
+    background: rgba(4,6,10,.7); box-shadow: 0 0 0 1px #000; }
+  #flaskpips i.on { background: linear-gradient(#b8f5cf, #2f9a63); box-shadow: 0 0 7px rgba(110,230,160,.7), 0 0 0 1px #000; }
+  #flaskcount { font-family: Georgia, serif; font-size: 12px; opacity: .8; }
+  #flask.empty { opacity: .6; }
+  #flask.deny { animation: deny .32s linear; }
+  #flask.deny #flaskpips i { border-color: #ff6a4c; }
+  @keyframes deny { 0%, 100% { transform: translateX(0); } 20% { transform: translateX(-6px); } 40% { transform: translateX(6px); }
+    60% { transform: translateX(-4px); } 80% { transform: translateX(3px); } }
+  #charge { position: absolute; left: 50%; top: 76%; width: 150px; height: 7px; margin-left: -75px; background: rgba(4,6,10,.75);
+    border: 1px solid rgba(201,162,90,.8); opacity: 0; transition: opacity .1s; }
+  #charge.on { opacity: 1; }
+  #charge div { height: 100%; width: 0; background: linear-gradient(90deg, #5aa7b4, #c8f4fa); }
+  #charge.full { border-color: #f2ffff; box-shadow: 0 0 12px #9fe0ea, 0 0 3px #fff; }
+  #charge.full div { background: #f2ffff; }
+  #charge span { position: absolute; left: 0; right: 0; top: 10px; text-align: center; font-size: 13px; letter-spacing: 4px;
+    text-shadow: 0 0 6px #000; opacity: 0; }
+  #charge.full span { opacity: 1; color: #eaffff; }
   @keyframes rise { 0% { opacity: 0; margin-top: 8px; } 15% { opacity: 1; } 100% { opacity: 0; margin-top: -54px; } }
 
   .screen { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -144,13 +168,16 @@
   <div id="punishcue">破绽 · PUNISH</div>
   <div id="prompt"></div>
   <div id="lockmark" class="hidden"></div>
+  <div id="charge"><div></div><span>蓄满 · RELEASE</span></div>
   <div id="playerbox">
+    <div id="flask"><b>R</b><span>药壶</span><span id="flaskpips"><i class="on"></i><i class="on"></i><i class="on"></i></span><span id="flaskcount">3/3</span></div>
     <div class="lbl">巷中客<small>THE WAYFARER</small></div>
     <div class="bar" id="playerbar"><div class="lag"></div><div class="fill"></div></div>
     <div id="status"></div>
   </div>
   <div id="hints">
-    <b>WASD</b> 移动　<b>J</b>/<b>左键</b> 连击　<b>K</b>/<b>右键</b> 格挡　<b>Space</b>/<b>L</b> 侧闪<br>
+    <b>WASD</b> 移动　<b>J</b>/<b>左键</b> 点按连击 · 按住蓄力　<b>K</b>/<b>右键</b> 格挡<br>
+    <b>左Shift</b>/<b>L</b> 侧闪　<b>Space</b> 跳跃　<b>R</b> 药壶<br>
     <b>F</b> 锁定　<b>Q E</b>/<b>鼠标</b> 视角　<b>P</b> 暂停　<b>M</b> 静音
   </div>
 </div>
@@ -162,16 +189,21 @@
     A rain-soaked tavern yard. Someone with two blades is waiting under the iron eaves.</p>
   <div id="controls">
     <span>移动 Move</span><span>W A S D / 方向键 Arrows</span>
-    <span>三段连击 3-hit combo</span><span>J / 鼠标左键 LMB (连按 press ×3)</span>
+    <span>三段连击 3-hit combo</span><span>J / 鼠标左键 LMB (点按 tap ×3)</span>
+    <span>蓄力重击 Charged heavy</span><span>J / LMB 按住至蓄满后松开 hold, release</span>
     <span>格挡 Guard (按住 hold)</span><span>K / 鼠标右键 RMB</span>
-    <span>侧闪 Sidestep (无敌帧 i-frames)</span><span>Space / L</span>
+    <span>侧闪 Sidestep (无敌帧 i-frames)</span><span>左 Shift (Left Shift) / L</span>
+    <span>跳跃 Jump</span><span>Space</span>
+    <span>药壶 Healing flask ×3</span><span>R</span>
     <span>视角 Camera</span><span>鼠标移动 Mouse / Q E</span>
     <span>锁定开关 Lock-on</span><span>F / Tab</span>
     <span>暂停 Pause · 静音 Mute</span><span>P · M</span>
-    <span>开始 / 重试 Start / Retry</span><span>Enter · R</span>
+    <span>开始 / 重试 Start / Retry</span><span>Enter (结算画面亦可 R on the result screen)</span>
   </div>
   <div class="tip">对手收招时脚下亮起<em>金环</em>——此刻出手即为<em>破绽</em>，伤害大增。架势未乱时，你的刀会被拨开。<br>
-    When the <em>gold ring</em> lights under a recovering foe, strike: <em>punish</em> hits deal bonus damage. A ready foe turns your blade aside.</div>
+    When the <em>gold ring</em> lights under a recovering foe, strike: <em>punish</em> hits deal bonus damage. A ready foe turns your blade aside.<br>
+    <em>突进</em>与<em>旋扫</em>贴地而来，可以跃过；其余招式照样打中空中的你。受击会打断蓄力与饮药。<br>
+    The <em>lunge</em> and the <em>spinning sweep</em> come in low and can be jumped; everything else still hits you in the air. A hit breaks a charge or a drink.</div>
   <button class="go" id="startbtn">入巷<small>ENTER THE LANE · Enter</small></button>
 </div>
 

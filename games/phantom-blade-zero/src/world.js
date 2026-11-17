@@ -390,23 +390,23 @@ export function buildWorld(scene, quality) {
   const rep = (t, x, y) => { const c = t.clone(); c.repeat.set(x, y); c.needsUpdate = true; return c; };
   const V2 = (v) => new THREE.Vector2(v, v);
   for (const t of [fl.map, fl.rough, fl.normal]) t.repeat.set(9, 9);
-  const groundMat = M({ map: fl.map, roughnessMap: fl.rough, normalMap: fl.normal, normalScale: V2(1.1), roughness: 1, metalness: 0, color: 0xb9bec8 });
+  const groundMat = M({ map: fl.map, roughnessMap: fl.rough, normalMap: fl.normal, normalScale: V2(1.1), roughness: 0.86, metalness: 0, color: 0xb9bec8 }); // wetter: the stone map's roughness is pulled down a little
   const plasterT = plasterTexture();
   const plasterN = plasterNormal();
   plasterN.repeat.set(3, 3);
   const plaster = M({ map: plasterT, normalMap: plasterN, normalScale: V2(0.7), roughness: 0.96, color: 0x9a9da3 });
   const timberT = timberTexture();
   const timberN = timberNormal();
-  const timber = M({ map: timberT, normalMap: timberN, normalScale: V2(0.9), roughness: 0.88, color: 0xa39486 });
-  const darkWood = M({ map: timberT, normalMap: timberN, normalScale: V2(0.8), color: 0x5a4a40, roughness: 0.84 });
+  const timber = M({ map: timberT, normalMap: timberN, normalScale: V2(0.9), roughness: 0.97, color: 0xa39486 }); // old timber stays matte next to the wet stone
+  const darkWood = M({ map: timberT, normalMap: timberN, normalScale: V2(0.8), color: 0x5a4a40, roughness: 0.93 });
   const roofT = roofTexture();
   roofT.repeat.set(10, 1);
   const roofN = roofNormal();
   roofN.repeat.set(10, 1);
   const roof = M({ map: roofT, normalMap: roofN, normalScale: V2(1.2), roughness: 0.34, metalness: 0, color: 0x8f98a8 });
-  const iron = M({ color: 0x2b2e33, roughness: 0.5, metalness: 1, roughnessMap: rep(D.smudge, 2, 2), normalMap: rep(D.hammered, 2, 2), normalScale: V2(0.4) });
-  const copper = M({ color: 0x8a5a3c, roughness: 0.36, metalness: 1, roughnessMap: rep(D.smudge, 3, 1), normalMap: rep(D.hammered, 3, 1), normalScale: V2(0.3) });
-  const brass = M({ color: 0x8a7038, roughness: 0.38, metalness: 1, roughnessMap: rep(D.smudge, 2, 1) });
+  const iron = M({ color: 0x2b2e33, roughness: 0.4, metalness: 1, roughnessMap: rep(D.smudge, 2, 2), normalMap: rep(D.hammered, 2, 2), normalScale: V2(0.4) });
+  const copper = M({ color: 0x8a5a3c, roughness: 0.27, metalness: 1, roughnessMap: rep(D.smudge, 3, 1), normalMap: rep(D.hammered, 3, 1), normalScale: V2(0.3) });
+  const brass = M({ color: 0x8a7038, roughness: 0.29, metalness: 1, roughnessMap: rep(D.smudge, 2, 1) });
   const stone = M({ color: 0x43464b, roughness: 0.8, normalMap: rep(D.leather, 6, 1), normalScale: V2(1.2) });
   const winT = windowTexture('lattice');
   const doorT = windowTexture('door');

@@ -13,7 +13,11 @@
     "shots:before": "node tests/compare-shots.mjs before",
     "shots:after": "node tests/compare-shots.mjs after",
     "shots:review": "vite build && node tests/compare-shots.mjs after review seq",
-    "test:sim": "node --test tests/sim.test.mjs",
+    "shots:controls:before": "node tests/compare-shots.mjs before controls",
+    "shots:controls:after": "node tests/compare-shots.mjs after controls",
+    "capture": "node tests/capture.mjs",
+    "check:online:local": "node tests/online-check-local.mjs",
+    "test:sim": "node --test tests/sim.test.mjs tests/controls.test.mjs",
     "test:offline": "playwright test"
   },
   "dependencies": {

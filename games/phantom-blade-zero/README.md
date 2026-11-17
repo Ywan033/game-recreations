@@ -25,13 +25,30 @@ two-phase duel from the opening lane to a win or loss screen, with retry.
 | 动作 Action | 键盘 Keyboard | 鼠标 Mouse |
 | --- | --- | --- |
 | 移动 Move | `W A S D` / 方向键 Arrow keys | — |
-| 三段连击 3-hit light combo | `J`（连按三次 press up to 3×） | 左键 Left button |
+| 三段连击 3-hit light combo | `J` 点按（连按三次 tap up to 3×） | 左键点按 Left button, tap |
+| 蓄力重击 Charged heavy | `J` 按住至“蓄满”提示后松开 hold until the "fully charged" cue, release | 左键按住后松开 Left button, hold and release |
 | 格挡 Guard（按住 hold） | `K` | 右键 Right button（按住） |
-| 侧闪 Sidestep（无敌帧 i-frames） | `Space` / `L`（配合方向键；不按方向为后撤） | — |
+| 侧闪 Sidestep（无敌帧 i-frames） | 左 `Shift`（`ShiftLeft`，仅左侧）/ `L`（配合方向键；不按方向为后撤） | — |
+| 跳跃 Jump | `Space`（按住不会连跳 holding does not re-jump） | — |
+| 药壶 Healing flask（3 次 charges） | `R`（仅战斗中 during the fight only） | — |
 | 视角 Camera | `Q` / `E` | 移动鼠标 Move the mouse（无需指针锁定 works without pointer lock） |
 | 锁定开关 Lock-on toggle | `F` / `Tab` | 中键 Middle button |
 | 暂停 Pause · 静音 Mute | `P` · `M` | — |
-| 开始 / 重试 Start / Retry | `Enter`（重试也可用 `R`） | 点击按钮 Click the button |
+| 开始 / 重试 Start / Retry | `Enter`（结算画面上也可用 `R`；战斗中 `R` 只是药壶 on the result screen `R` also retries; during the fight `R` is only the flask） | 点击按钮 Click the button |
+
+攻击键规则 Attack key: 按下即起手（轻击手感不变）。起手结束前松开 = 一次轻击；仍按住则转入蓄力，
+蓄满前松开仍只是那一次轻击，蓄满后松开（或按满 3 秒）= 一次重击。一次按键绝不会同时打出轻击和重击。
+受击会打断蓄力与未喝下的药。A press starts the light cut's wind-up at once; released before the
+wind-up ends it is one light cut, still held it becomes a charge, and only a full charge turns
+that same input into one heavy cut instead. A hit breaks a charge or an unfinished drink.
+
+跳跃 Jump: 没有无敌帧。Boss 的**突进**与二阶段**旋扫**贴地，可以跃过（双脚离地 0.45 m 以上）；
+其余招式照样命中空中的你，空中不能格挡或侧闪。No invulnerability: only the boss's lunge and the
+phase-two spinning sweep are low enough to jump; everything else still hits, and you cannot guard
+or sidestep in the air.
+
+药壶 Flask: 3 次，每次回复 37.5% 生命上限（不超过上限），开饮 0.6 秒后在同一瞬间扣除次数并回血，
+之前被打断则不消耗也不回复；满血或空壶时按 `R` 只有提示，不消耗。重试时恢复为 3 次。
 
 锁定时 `W` 始终朝向 Boss，`A`/`D` 绕其周旋，`S` 后撤。走出窄巷踏入院子即开战，铁栅在身后落下。
 Boss 收招时脚下亮起金环并显示「破绽 · PUNISH」，此时命中伤害 ×1.8；Boss 架势未乱（待机）时
@@ -48,7 +65,12 @@ npm run install:browsers # 安装 Playwright 的 Chromium
 npm run test:offline     # 离线真实输入测试（file://，断网）
 npm run test:sim         # 可选：纯逻辑的代码级测试（Node，无浏览器）
 npm run shots:after      # 可选：用真实输入截取对比图 compare/after-*.png（需先 build）
+npm run shots:controls:after  # 可选：操作/动作/雨声升级的对比图 compare/controls/after-*.png
+npm run capture          # 可选：录制 compare/controls/gameplay.webm（带声音）、ambience.wav 与音频电平测量
 ```
+
+操作/动作/雨声升级的证据在 `compare/controls/`：`before-*.png` / `after-*.png`、`gameplay.webm`（带声音的
+实机片段）、`ambience.wav`（雨声环境层）、`frame-*.png`（录制片段时的截图）、`audio-measurements.json`（实测电平）。
 
 对比截图 Before/after：`compare/before-*.png` 是画面升级前的交付版本，`compare/after-*.png` 是当前版本
 （同一脚本 `tests/compare-shots.mjs`、同一种子、1280×720、默认画质）。
@@ -68,6 +90,8 @@ npm run shots:after      # 可选：用真实输入截取对比图 compare/after
 | `q=low` | 低画质：关闭阴影、减少点光源与雨滴、像素比 1 |
 | `gl` | 强制使用 WebGL 2 后端 |
 | `mute` | 启动即静音 |
+| `nomusic` | 不播放配乐（只留雨声与战斗音效，用于测量环境声） |
+| `rec` | 暴露 `window.__rec` 录制钩子：页面内用 MediaRecorder 录下画布与游戏主输出，并可截取混音做电平测量（`npm run capture` 使用；只观察，不注入输入） |
 
 只读状态探针 `window.__game.snapshot()` / `window.__game.events(sinceT)` 供测试读取状态，不能修改游戏。
 
@@ -79,7 +103,8 @@ npm run shots:after      # 可选：用真实输入截取对比图 compare/after
 - `src/world.js` — 程序化院落场景、材质与灯光；`src/tex.js` — 程序化贴图与高度图转法线图
 - `src/fighter.js` — 蒙皮人形网格的生成（放样 + 骨骼权重）、分层服装、姿态动画、落脚与腿部 IK
 - `src/fx.js` — 雨、水花、蒸汽、刀光拖尾、预兆贴花；`src/audio.js` — WebAudio 合成音效与配乐
-- `tests/offline.spec.js` — 离线真实输入测试；`tests/sim.test.mjs` — 代码级模拟测试
+- `tests/offline.spec.js` — 离线真实输入测试；`tests/sim.test.mjs`、`tests/controls.test.mjs` — 代码级模拟测试
+- `tests/capture.mjs` — 真实输入驱动的录制与音频测量脚本（片段、环境声、电平）
 - `tests/online-check.cjs` — 发布页面检查（由仓库的 launcher 调用）
 - `tests/compare-shots.mjs` — 真实输入的对比截图脚本；`compare/` — 升级前后的对比图（随仓库提交）
 - `tools/` — 开发辅助脚本（截图、WebGPU 检查），不属于交付检查
@@ -87,6 +112,8 @@ npm run shots:after      # 可选：用真实输入截取对比图 compare/after
 ## 许可与素材 Licensing
 
 项目代码为 MIT 许可（见仓库根目录 `LICENSE`）。没有内嵌任何第三方美术、字体或音频素材；
+雨声（远处雨幕、石板与水洼上的雨点、檐口滴水、屋檐木瓦上的雨）、脚步、兵刃、药壶等全部声音均由
+`src/audio.js` 用 WebAudio 实时合成，没有使用任何录音；
 中文字形使用系统自带字体（楷体/宋体回退）。运行时依赖 three.js（MIT，© three.js authors）被打包进
 `dist/play.html`，其许可声明注释保留在打包文件中。
 

@@ -31,6 +31,23 @@ export const GUARD_MULT = 0.25;
 export const GUARD_HEAVY_MULT = 0.4;
 export const PERFECT_WINDOW = 0.2;
 export const DODGE = { dur: 0.4, inv: 0.3, dist: 3.8, cd: 0.62 };
+
+// ---- controls pass: jump, charged heavy, healing flask (all tuning in this one block) ----
+// Jump: Space. A short crouch, a ballistic arc with moderate air steering, a short landing.
+// No invulnerability: only boss hits flagged `low` (the lunge dash and the phase-two spinning
+// sweep) pass under a player whose feet are above JUMP.clear; every other hit still lands, and
+// an airborne player can neither guard nor sidestep.
+export const JUMP = { v0: 6.8, g: 22, takeoff: 0.07, land: 0.14, airAccel: 10, airMax: 5.4, clear: 0.45 };
+// Charge: the attack key starts the light cut's wind-up at once. Released before the wind-up
+// ends it is an ordinary light cut (no added latency). Still held at that point it becomes a
+// charge; released before CHARGE.full it is still just that one light cut, released after it
+// (or held for CHARGE.maxHold) it is one heavy cut instead. Never both.
+export const CHARGE = { full: 0.5, maxHold: 3.0, moveSpeed: 1.5 };
+export const HEAVY = { wind: 0.14, act: 0.12, rec: 0.6, dmg: 34, step: 1.15, reach: 3.05, arc: 1.25, deflect: 0.7 };
+// Flask: R. The charge is spent and the heal applied in the same simulation step, FLASK.wind
+// seconds into the drink; a hit before that step costs nothing and heals nothing.
+export const FLASK = { charges: 3, healFrac: 0.375, wind: 0.6, rec: 0.35, moveSpeed: 1.3, failCd: 0.35 };
+
 const PLAYER_REACH = 2.75;
 const PLAYER_ARC = 1.15;
 
@@ -112,7 +129,7 @@ function buildMove(name, phase, rng, dist) {
     if (p2) {
       // Phase-two follow-up: a held coil, then a full-circle spinning sweep.
       segs.push({ k: 'hold', d: 0.42, tele: 'spin', turn: 3 });
-      segs.push({ k: 'hit', d: 0.14, dmg: 16, reach: 3.4, arc: Math.PI, adv: 0.4, heavy: true, anim: 'spin', follow: 'spin' });
+      segs.push({ k: 'hit', d: 0.14, dmg: 16, reach: 3.4, arc: Math.PI, adv: 0.4, heavy: true, low: true, anim: 'spin', follow: 'spin' });
     }
     segs.push({ k: 'rec', d: p2 ? 0.95 : 1.15 });
   } else if (name === 'delay') {
@@ -129,7 +146,7 @@ function buildMove(name, phase, rng, dist) {
     segs.push({ k: 'rec', d: p2 ? 1.15 : 1.4 });
   } else if (name === 'lunge') {
     segs.push({ k: 'wind', d: p2 ? 0.5 : 0.7, tele: 'lunge', turn: 8 });
-    segs.push({ k: 'dash', d: 0.3, speed: 24, dmg: 18, reach: 2.0, arc: 1.2, anim: 'dash' });
+    segs.push({ k: 'dash', d: 0.3, speed: 24, dmg: 18, reach: 2.0, arc: 1.2, low: true, anim: 'dash' });
     if (p2) {
       // Phase-two follow-up: a reverse cut after the lunge.
       segs.push({ k: 'hold', d: 0.32, tele: 'reverse', turn: 14 });
@@ -171,6 +188,7 @@ export function resetFight(g) {
   g.stats = {
     swings: 0, hitsLanded: 0, comboMax: 0, punishHits: 0, guarded: 0, perfect: 0,
     dodged: 0, hurt: 0, damageDealt: 0, damageTaken: 0, bossMoves: 0, followUps: 0,
+    jumps: 0, jumpedOver: 0, heavies: 0, heavyHits: 0, heals: 0, healed: 0, drinkFails: 0,
   };
   const php = Math.max(1, Math.round(120 * g.opts.playerHpScale));
   const bhp = Math.max(2, Math.round(640 * g.opts.bossHpScale));
@@ -179,6 +197,9 @@ export function resetFight(g) {
     st: 'idle', t: 0, combo: 0, queued: false, hitDone: false,
     guard: false, guardT: 0, inv: 0, dodgeCd: 0, dodgeX: 0, dodgeZ: 0,
     bufAttack: 0, bufDodge: 0, moving: false, kx: 0, kz: 0, hurtDur: 0.4,
+    y: 0, vy: 0, ax: 0, az: 0, bufJump: 0, jumpPrev: false,
+    chargeT: 0, charged: false, noCharge: false,
+    flask: FLASK.charges, maxFlask: FLASK.charges, drank: false, bufDrink: 0, drinkPrev: false, failCd: 0,
   };
   g.boss = {
     x: 0, z: -2.5, yaw: 0, hp: bhp, maxHp: bhp, phase: 1,
@@ -206,6 +227,29 @@ export function retry(g) {
   if (g.mode === 'victory' || g.mode === 'defeat') {
     resetFight(g);
     emit(g, 'retry', {});
+  }
+}
+
+// Drop any charge or unfinished drink (a hit, death, pause or window blur). Emits what broke.
+function interrupt(g) {
+  const p = g.player;
+  if (p.st === 'charge') emit(g, 'chargeBreak', { t0: +p.chargeT.toFixed(3) });
+  else if (p.st === 'drink' && !p.drank) emit(g, 'drinkBreak', { left: p.flask });
+  p.chargeT = 0; p.charged = false; p.noCharge = false; p.drank = false;
+  p.queued = false; p.combo = 0;
+}
+
+// Called by the page on pause and on window blur: no held or buffered action may survive.
+// A charge, an unfinished drink and a jump crouch return to idle (nothing is spent, nothing
+// swings); a body already in the air simply finishes its fall.
+export function cancelActions(g) {
+  const p = g.player;
+  if (g.mode !== 'fight' || p.st === 'dead') return;
+  p.bufAttack = 0; p.bufDodge = 0; p.bufJump = 0; p.bufDrink = 0;
+  p.jumpPrev = false; p.drinkPrev = false; p.guard = false;
+  if (p.st === 'charge' || (p.st === 'drink' && !p.drank) || p.st === 'jumpStart') {
+    interrupt(g);
+    p.st = 'idle'; p.t = 0;
   }
 }
 
@@ -237,8 +281,27 @@ function stepPlayer(g, inp, dt) {
   p.t += dt;
   p.inv = Math.max(0, p.inv - dt);
   p.dodgeCd = Math.max(0, p.dodgeCd - dt);
+  p.failCd = Math.max(0, p.failCd - dt);
   p.moving = false;
+  // vertical motion is state-independent: a fighter hit (or killed) in the air still falls
+  if (p.y > 0 || p.vy > 0) {
+    p.vy -= JUMP.g * dt;
+    p.y += p.vy * dt;
+    if (p.y <= 0) {
+      p.y = 0; p.vy = 0;
+      if (p.st === 'air') { p.st = 'land'; p.t = 0; emit(g, 'land', {}); }
+    }
+  }
   if (p.st === 'dead') return;
+
+  // jump and drink are edge-triggered here as well, so a held key can never repeat them
+  const jumpEdge = !!inp.jump && !p.jumpPrev;
+  p.jumpPrev = !!inp.jump;
+  const drinkEdge = !!inp.drink && !p.drinkPrev;
+  p.drinkPrev = !!inp.drink;
+  p.bufJump = jumpEdge ? 0.12 : Math.max(0, p.bufJump - dt);
+  p.bufDrink = drinkEdge ? 0.2 : Math.max(0, p.bufDrink - dt);
+  const held = !!inp.attackHeld;
 
   let mx = inp.mx || 0;
   let mz = inp.mz || 0;
@@ -254,9 +317,13 @@ function stepPlayer(g, inp, dt) {
 
   // Sidestep: cancels idle, guard, and the recovery part of a swing.
   const A = ATTACKS[p.combo];
-  const canDodge = p.dodgeCd <= 0 && (p.st === 'idle' || (p.st === 'attack' && p.t >= A.wind + A.act));
+  const canDodge = p.dodgeCd <= 0 && (p.st === 'idle' || p.st === 'charge'
+    || (p.st === 'attack' && p.t >= A.wind + A.act)
+    || (p.st === 'heavy' && p.t >= HEAVY.wind + HEAVY.act + HEAVY.rec * 0.6));
   if (p.bufDodge > 0 && canDodge) {
     p.bufDodge = 0;
+    if (p.st === 'charge') interrupt(g);
+    p.chargeT = 0; p.charged = false;
     if (ml > 0.01) { p.dodgeX = mx; p.dodgeZ = mz; }
     else { p.dodgeX = -Math.sin(p.yaw); p.dodgeZ = -Math.cos(p.yaw); }
     p.st = 'dodge'; p.t = 0; p.inv = Math.max(p.inv, DODGE.inv); p.dodgeCd = DODGE.cd;
@@ -269,7 +336,24 @@ function stepPlayer(g, inp, dt) {
     if (guard && !p.guard) { p.guardT = 0; emit(g, 'guardUp', {}); }
     p.guard = guard;
     if (guard) p.guardT += dt;
-    if (p.bufAttack > 0) {
+    if (p.bufJump > 0) {
+      p.bufJump = 0;
+      const sp = guard ? 2.0 : 5.4;
+      p.st = 'jumpStart'; p.t = 0; p.guard = false;
+      p.ax = mx * sp; p.az = mz * sp;
+    } else if (p.bufDrink > 0) {
+      p.bufDrink = 0;
+      if (p.flask <= 0 || p.hp >= p.maxHp) {
+        if (p.failCd <= 0) {
+          p.failCd = FLASK.failCd;
+          g.stats.drinkFails++;
+          emit(g, 'drinkFail', { reason: p.flask <= 0 ? 'empty' : 'full', left: p.flask });
+        }
+      } else {
+        p.st = 'drink'; p.t = 0; p.drank = false; p.guard = false;
+        emit(g, 'drink', { left: p.flask });
+      }
+    } else if (p.bufAttack > 0) {
       p.bufAttack = 0;
       beginSwing(g, 0);
     } else {
@@ -294,15 +378,107 @@ function stepPlayer(g, inp, dt) {
       }
     }
     if (!p.hitDone && p.t >= A.wind) {
+      if (held && !p.noCharge) {
+        // still holding at the end of the wind-up: hold the blade back and charge instead
+        p.st = 'charge'; p.chargeT = 0; p.charged = false; p.queued = false;
+        emit(g, 'chargeStart', { n: p.combo + 1 });
+        return;
+      }
       p.hitDone = true;
-      playerStrike(g, A);
+      playerStrike(g, A, false);
     }
     const total = A.wind + A.act + A.rec;
     if (p.queued && p.combo < 2 && p.t >= A.wind + A.act + A.rec * 0.3) {
       beginSwing(g, p.combo + 1);
     } else if (p.t >= total) {
-      p.st = 'idle'; p.t = 0; p.combo = 0; p.queued = false;
+      p.st = 'idle'; p.t = 0; p.combo = 0; p.queued = false; p.noCharge = false;
     }
+  } else if (p.st === 'charge') {
+    p.guard = false;
+    p.chargeT += dt;
+    p.x += mx * CHARGE.moveSpeed * dt;
+    p.z += mz * CHARGE.moveSpeed * dt;
+    p.moving = ml > 0.01;
+    if (bossAlive && g.engaged && (faceBoss || distBoss < 4.5)) p.yaw = turnToward(p.yaw, toBoss, 10 * dt);
+    else if (p.moving) p.yaw = turnToward(p.yaw, Math.atan2(mx, mz), 8 * dt);
+    if (!p.charged && p.chargeT >= CHARGE.full) { p.charged = true; emit(g, 'charged', {}); }
+    if (!held || p.chargeT >= CHARGE.maxHold) {
+      if (p.charged) {
+        p.st = 'heavy'; p.t = 0; p.hitDone = false; p.combo = 0;
+        g.stats.heavies++;
+        emit(g, 'swing', { n: 4, heavy: true });
+      } else {
+        // let go early: the light cut this press started lands now; nothing else comes of it
+        p.st = 'attack'; p.t = A.wind; p.hitDone = false; p.noCharge = true;
+      }
+      p.chargeT = 0; p.charged = false;
+    }
+  } else if (p.st === 'heavy') {
+    p.guard = false;
+    const H = HEAVY;
+    if (p.t < H.wind) {
+      const assist = bossAlive && g.engaged && (faceBoss || distBoss < 4.5);
+      if (assist) p.yaw = turnToward(p.yaw, toBoss, 16 * dt);
+      if (!assist || distBoss > 1.9) {
+        const v = H.step / H.wind;
+        p.x += Math.sin(p.yaw) * v * dt;
+        p.z += Math.cos(p.yaw) * v * dt;
+      }
+    }
+    if (!p.hitDone && p.t >= H.wind) {
+      p.hitDone = true;
+      playerStrike(g, H, true);
+    }
+    if (p.t >= H.wind + H.act + H.rec) { p.st = 'idle'; p.t = 0; p.combo = 0; p.queued = false; }
+  } else if (p.st === 'jumpStart') {
+    p.guard = false;
+    p.x += p.ax * dt;
+    p.z += p.az * dt;
+    if (p.t >= JUMP.takeoff) {
+      p.st = 'air'; p.t = 0; p.vy = JUMP.v0;
+      g.stats.jumps++;
+      emit(g, 'jump', {});
+    }
+  } else if (p.st === 'air') {
+    p.guard = false;
+    // moderate air steering: the take-off velocity is bent toward the stick, not replaced
+    if (ml > 0.01) {
+      const tx = mx * JUMP.airMax - p.ax, tz = mz * JUMP.airMax - p.az;
+      const tl = Math.hypot(tx, tz);
+      const k = tl > 1e-6 ? Math.min(1, (JUMP.airAccel * dt) / tl) : 0;
+      p.ax += tx * k; p.az += tz * k;
+    }
+    p.x += p.ax * dt;
+    p.z += p.az * dt;
+    if (faceBoss) p.yaw = turnToward(p.yaw, toBoss, 8 * dt);
+    else if (Math.hypot(p.ax, p.az) > 0.5) p.yaw = turnToward(p.yaw, Math.atan2(p.ax, p.az), 8 * dt);
+  } else if (p.st === 'land') {
+    p.guard = false;
+    const k = 0.45;
+    p.x += mx * 5.4 * k * dt;
+    p.z += mz * 5.4 * k * dt;
+    p.moving = ml > 0.01;
+    if (faceBoss) p.yaw = turnToward(p.yaw, toBoss, 14 * dt);
+    else if (p.moving) p.yaw = turnToward(p.yaw, Math.atan2(mx, mz), 12 * dt);
+    if (p.t >= JUMP.land) { p.st = 'idle'; p.t = 0; p.ax = 0; p.az = 0; }
+  } else if (p.st === 'drink') {
+    p.guard = false;
+    p.x += mx * FLASK.moveSpeed * dt;
+    p.z += mz * FLASK.moveSpeed * dt;
+    p.moving = ml > 0.01;
+    if (faceBoss) p.yaw = turnToward(p.yaw, toBoss, 8 * dt);
+    else if (p.moving) p.yaw = turnToward(p.yaw, Math.atan2(mx, mz), 8 * dt);
+    if (!p.drank && p.t >= FLASK.wind) {
+      // the one moment: the charge is spent and the heal applied in this same step
+      p.drank = true;
+      p.flask -= 1;
+      const before = p.hp;
+      p.hp = Math.min(p.maxHp, p.hp + Math.max(1, Math.round(p.maxHp * FLASK.healFrac)));
+      g.stats.heals++;
+      g.stats.healed += p.hp - before;
+      emit(g, 'heal', { amount: p.hp - before, hp: p.hp, left: p.flask });
+    }
+    if (p.t >= FLASK.wind + FLASK.rec) { p.st = 'idle'; p.t = 0; p.drank = false; }
   } else if (p.st === 'dodge') {
     p.guard = false;
     const v = (DODGE.dist / DODGE.dur) * 2 * (1 - p.t / DODGE.dur);
@@ -315,25 +491,26 @@ function stepPlayer(g, inp, dt) {
     const k = Math.max(0, 1 - p.t / p.hurtDur);
     p.x += p.kx * k * dt;
     p.z += p.kz * k * dt;
-    if (p.t >= p.hurtDur) { p.st = 'idle'; p.t = 0; }
+    if (p.t >= p.hurtDur && p.y <= 0) { p.st = 'idle'; p.t = 0; }
   }
 }
 
 function beginSwing(g, idx) {
   const p = g.player;
   p.st = 'attack'; p.t = 0; p.combo = idx; p.queued = false; p.hitDone = false; p.guard = false;
+  p.noCharge = false;
   g.stats.swings++;
   g.stats.comboMax = Math.max(g.stats.comboMax, idx + 1);
   emit(g, 'swing', { n: idx + 1 });
 }
 
-function playerStrike(g, A) {
+function playerStrike(g, A, heavy) {
   const p = g.player;
   const b = g.boss;
   if (!g.engaged || b.st === 'dead') return;
   const d = Math.hypot(b.x - p.x, b.z - p.z);
   const ang = Math.abs(angDiff(Math.atan2(b.x - p.x, b.z - p.z), p.yaw));
-  if (d > PLAYER_REACH || ang > PLAYER_ARC) return;
+  if (d > (A.reach || PLAYER_REACH) || ang > (A.arc || PLAYER_ARC)) return;
   if (b.st === 'phase' || b.st === 'intro') {
     emit(g, 'clank', {});
     return;
@@ -341,11 +518,12 @@ function playerStrike(g, A) {
   const punish = b.st === 'recover';
   // A ready boss turns hits aside on its blades; only openings take full or bonus damage.
   const blocked = b.st === 'idle';
-  const dmg = Math.max(1, Math.round(A.dmg * (punish ? PUNISH_MULT : blocked ? DEFLECT_MULT : 1)));
-  damageBoss(g, dmg, punish, A.dmg, p.combo + 1, blocked);
+  const dmg = Math.max(1, Math.round(A.dmg * (punish ? PUNISH_MULT : blocked ? (A.deflect || DEFLECT_MULT) : 1)));
+  if (heavy) g.stats.heavyHits++;
+  damageBoss(g, dmg, punish, A.dmg, heavy ? 4 : p.combo + 1, blocked, !!heavy);
 }
 
-function damageBoss(g, dmg, punish, base, n, blocked) {
+function damageBoss(g, dmg, punish, base, n, blocked, heavy) {
   const b = g.boss;
   const before = b.hp;
   b.hp = Math.max(0, b.hp - dmg);
@@ -353,7 +531,7 @@ function damageBoss(g, dmg, punish, base, n, blocked) {
   g.stats.hitsLanded++;
   g.stats.damageDealt += before - b.hp;
   if (punish) g.stats.punishHits++;
-  emit(g, 'bossHurt', { dmg, base, punish, blocked: !!blocked, n, hp: b.hp, phase: b.phase, bossSt: b.st });
+  emit(g, 'bossHurt', { dmg, base, punish, blocked: !!blocked, heavy: !!heavy, n, hp: b.hp, phase: b.phase, bossSt: b.st });
   if (b.st === 'idle') b.idleDur = Math.min(b.idleDur, b.t + 0.3);
   if (b.hp <= 0) {
     b.st = 'dead'; b.t = 0; b.move = null;
@@ -381,6 +559,7 @@ function damagePlayer(g, seg, moveName) {
   const dirZ = p.z - b.z;
   const dl = Math.hypot(dirX, dirZ) || 1;
   const frontal = Math.abs(angDiff(Math.atan2(b.x - p.x, b.z - p.z), p.yaw)) < 1.75;
+  const airborne = p.y > 0;
   let dmg = raw;
   let guarded = false;
   let perfect = false;
@@ -401,11 +580,12 @@ function damagePlayer(g, seg, moveName) {
     }
   } else {
     g.stats.hurt++;
+    interrupt(g); // a hit breaks a charge or an unfinished drink: no swing, no charge spent, no heal
     p.st = 'hurt'; p.t = 0; p.hurtDur = 0.42; p.combo = 0; p.queued = false;
     p.kx = (dirX / dl) * 6; p.kz = (dirZ / dl) * 6;
     p.inv = 0.28;
   }
-  emit(g, 'playerHurt', { raw, dmg, guarded, perfect, heavy: !!seg.heavy, move: moveName, hp: p.hp });
+  emit(g, 'playerHurt', { raw, dmg, guarded, perfect, heavy: !!seg.heavy, airborne, move: moveName, hp: p.hp });
   if (p.hp <= 0) {
     p.st = 'dead'; p.t = 0; p.guard = false;
     g.endT = 0;
@@ -458,7 +638,7 @@ function enterSeg(g) {
   const b = g.boss;
   const p = g.player;
   const s = currentSeg(b);
-  b.segT = 0; b.segDone = false;
+  b.segT = 0; b.segDone = false; b.segJumped = false;
   if (s.k === 'rec') {
     b.st = 'recover';
     emit(g, 'recover', { d: s.d, move: b.move.name });
@@ -488,6 +668,15 @@ function bossHitCheck(g, s) {
   const d = Math.hypot(dx, dz);
   if (d > s.reach) return;
   if (Math.abs(angDiff(Math.atan2(dx, dz), b.yaw)) > s.arc) return;
+  if (s.low && p.y > JUMP.clear) {
+    // a low sweep passes under the jumper; the segment stays live, so landing inside it still hurts
+    if (!b.segJumped) {
+      b.segJumped = true;
+      g.stats.jumpedOver++;
+      emit(g, 'jumpedOver', { move: b.move.name, anim: s.anim });
+    }
+    return;
+  }
   const res = damagePlayer(g, s, b.move.name);
   if (res !== 'none') b.segDone = true;
 }
@@ -522,6 +711,7 @@ function stepBoss(g, dt) {
       if (dist < 5.5 && p.st !== 'dead') {
         const nx = dist > 0.01 ? dx / dist : 0;
         const nz = dist > 0.01 ? dz / dist : 1;
+        interrupt(g);
         p.st = 'hurt'; p.t = 0; p.hurtDur = 0.45; p.guard = false; p.combo = 0;
         const push = (5.6 - dist) / 0.225; // integrates to roughly reach 5.6 m
         p.kx = nx * push; p.kz = nz * push;
