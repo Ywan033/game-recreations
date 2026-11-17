@@ -164,3 +164,14 @@ above and the read-only probe.
   fresh offline browser context was.
 - The published (https) page was not checked.
 - Gamepad and touch input are not supported.
+
+## Published page check (added by the launcher run, 2026-11-17)
+
+This supersedes the "published (https) page was not checked" item above. The delivered
+`play.html` was published unchanged to GitHub Pages:
+https://ywan033.github.io/game-recreations/play/reedmoon-duel.html
+
+`scripts/verify-online.cjs` with `tests/online-check.cjs` opened that URL in a fresh, logged-out
+Chromium context (headless): HTTP 200, canvas visible, the fight was started and movement and an
+attack were driven with real keyboard and mouse input, and there were no uncaught page errors.
+Result: PASS. This is a short load-and-input check, not a full fight.
