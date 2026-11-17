@@ -4,6 +4,15 @@
 
 当前进度见 [PROGRESS.md](PROGRESS.md)。
 
+## 在线试玩
+
+<!-- online-play:start -->
+- **雨巷双刃 (Rainlane Blades)**：待上线
+- **苇月剑决 (Reedmoon Duel)**：待上线
+<!-- online-play:end -->
+
+每款通过离线验收后，同一个已验证的 HTML 会发布到 GitHub Pages（`docs/play/`），并在无登录的浏览器中验证实际网址后才在此处给出链接。需要桌面浏览器、键盘和鼠标。
+
 ## 游戏与顺序
 
 | 顺序 | 游戏 | 工程 ID / 分支 | 交付文件 |
@@ -24,6 +33,7 @@ tasks/<id>.md              每款的任务说明
 scripts/run-games.ps1      无人值守启动器
 scripts/simulate.ps1       启动器的本地模拟（不调用模型，不推送）
 scripts/progress-labels.json  进度表文案
+docs/                      GitHub Pages 站点；docs/play/ 放已验证的单文件 HTML
 games/<id>/                游戏源码、README、CLAUDE.md、DELIVERY.md（在各自的 game/<id> 分支）
 ```
 
