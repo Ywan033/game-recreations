@@ -89,11 +89,11 @@ function matFactory() {
   const moon = vec3(MOON.dir.x, MOON.dir.y, MOON.dir.z), mc = new THREE.Color(MOON.color);
   // moon-side rim: grazing view angle on surfaces that turn toward the moon
   const rim = (k) => {
-    const fres = float(1).sub(normalView.dot(positionViewDirection).clamp(0, 1)).pow(2.6);
+    const fres = float(1).sub(normalView.dot(positionViewDirection).clamp(0, 1)).pow(2.0);
     return vec3(mc.r, mc.g, mc.b).mul(fres).mul(smoothstep(-0.55, 0.35, normalWorld.dot(moon))).mul(k);
   };
   return (color, o = {}) => {
-    const { tex, rimK = 0.85, ...rest } = o;
+    const { tex, rimK = 1.25, ...rest } = o;
     const m = new THREE.MeshStandardNodeMaterial({ color, roughness: 0.92, metalness: 0, map: tex ? TEX[tex] : null, ...rest });
     if (rimK > 0) m.emissiveNode = rim(rimK);
     return m;
@@ -304,7 +304,9 @@ export class Figure {
         a[0] += (b[0] - a[0]) * kk; a[1] += (b[1] - a[1]) * kk; a[2] += (b[2] - a[2]) * kk;
       }
       for (const key of SC) c[key] += (pose[key] - c[key]) * k;
-      for (const s of [this.rk, this.sk, this.dip]) { s.v += (-190 * s.x - 15 * s.v) * dt; s.x += s.v * dt; }
+      // springs are sub-stepped so long frames (slow renderers) cannot make them diverge
+      const n = Math.ceil(dt / 0.034), h = dt / n;
+      for (let i = 0; i < n; i++) for (const s of [this.rk, this.sk, this.dip]) { s.v += (-190 * s.x - 15 * s.v) * h; s.x += s.v * h; }
       this.clock += dt;
     }
     this.yOff += ((extra.yOff || 0) - this.yOff) * (1 - Math.exp(-dt * 20));
@@ -427,7 +429,8 @@ export class Figure {
     // ---- cloth: hinged panels that hang with gravity, trail behind motion and clear the legs
     if (dt > 0) {
       const s = this.sway, tx = -lvx * 0.085, tz = -lvz * 0.085;
-      s.vx += ((tx - s.x) * 70 - s.vx * 8) * dt; s.vz += ((tz - s.z) * 70 - s.vz * 8) * dt; s.x += s.vx * dt; s.z += s.vz * dt;
+      const n = Math.ceil(dt / 0.034), h = dt / n;
+      for (let i = 0; i < n; i++) { s.vx += ((tx - s.x) * 70 - s.vx * 8) * h; s.vz += ((tz - s.z) * 70 - s.vz * 8) * h; s.x += s.vx * h; s.z += s.vz * h; }
     }
     const pitchP = pel.rotation.x, pitchC = pitchP + cx, hingeY = pel.position.y + 0.08, chestY = mc.elements[13] + 0.2;
     const tl = this.legL, tr = this.legR;

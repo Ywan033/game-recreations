@@ -1,6 +1,6 @@
 // The arena: a trampled islet in a reed fen at night, lit by one low moon. All procedural.
 import * as THREE from 'three/webgpu';
-import { positionLocal, time, sin, vec3, instanceIndex, uv, mix, color, instancedBufferAttribute } from 'three/tsl';
+import { positionLocal, time, sin, vec3, instanceIndex, uv, mix, color, instancedBufferAttribute, smoothstep, cameraPosition } from 'three/tsl';
 import { C } from './sim.js';
 
 // The single key light. Everything that shades by the moon (sky, light, shadows, rim) reads this.
@@ -197,14 +197,17 @@ export function buildWorld(scene, low) {
     g.setIndex(idx); g.computeVertexNormals();
     return g;
   };
-  const windMat = (base, tip, plumeCol, glint) => (aw) => {
+  const windMat = (base, tip, plumeCol, glint, clearCam = false) => (aw) => {
     const m = new THREE.MeshStandardNodeMaterial({ side: THREE.DoubleSide, roughness: 0.85 });
     const h = uv().y, idxf = instanceIndex.toFloat();
     const gust = sin(time.mul(0.85).sub(aw.x)).mul(0.5).add(0.5); // slow waves crossing the field
     const flutter = sin(time.mul(3.1).add(idxf.mul(1.71))).mul(0.14).add(sin(time.mul(1.7).add(idxf.mul(0.37))).mul(0.2));
     const bend = h.mul(h).mul(gust.mul(0.75).add(0.25).add(flutter)).mul(aw.y);
     // (the offset is applied after the instance transform, so it is already in world units)
-    m.positionNode = positionLocal.add(vec3(bend.mul(WIND.x), bend.mul(bend).mul(-0.3), bend.mul(WIND.y)));
+    const swayed = positionLocal.add(vec3(bend.mul(WIND.x), bend.mul(bend).mul(-0.3), bend.mul(WIND.y)));
+    // tall stalks right around the camera lie down, so the view from the boundary is never a face full of leaves
+    const keep = smoothstep(3.0, 6.0,positionLocal.xz.sub(cameraPosition.xz).length());
+    m.positionNode = clearCam ? vec3(swayed.x, swayed.y.mul(keep).sub(keep.oneMinus().mul(0.4)), swayed.z) : swayed;
     const shade = sin(idxf.mul(12.9)).mul(0.16).add(0.84);
     const col = mix(mix(color(base), color(tip), h.mul(1.15).clamp(0, 1)), color(plumeCol), uv().x).mul(shade);
     m.colorNode = col;
@@ -238,7 +241,7 @@ export function buildWorld(scene, low) {
     return { a, r: inner + 6, x: o.position.x, z: o.position.z, edge: inner };
   };
   const reedCount = low ? 3400 : 15000;
-  scatter(reedCount, stalkGeo('reed'), windMat(0x34321f, 0x7a7252, 0x9a927a, 0.07), (o) => {
+  const reeds = scatter(reedCount,stalkGeo('reed'), windMat(0x34321f, 0x7a7252, 0x9a927a, 0.07, true), (o) => {
     const s = reedSpot(o);
     const stand = noise.fbm(s.x * 0.06 + 7, s.z * 0.06 + 21); // 0 calm/short .. 1 tall/wild
     const bent = R() < 0.09;
@@ -248,7 +251,7 @@ export function buildWorld(scene, low) {
     return (0.16 + stand * 0.55 + R() * 0.12) * (bent ? 0.5 : 1);
   });
   // snapped stalks along the inner edge, and a few lying flat at the rim of the clearing
-  scatter(low ? 120 : 420, stalkGeo('broken'), windMat(0x2a281a, 0x7d7555, 0xb9b295, 0.1), (o, i) => {
+  scatter(low ? 120 : 420, stalkGeo('broken'), windMat(0x2a281a, 0x7d7555, 0xb9b295, 0.1, true), (o, i) => {
     const s = reedSpot(o);
     if (i % 5 === 0) { const rr = C.ARENA_R - 0.6 + R() * 1.6; o.position.set(Math.sin(s.a) * rr, 0.02, Math.cos(s.a) * rr); o.rotation.set(Math.PI / 2 - 0.06, R() * 6.28, 0, 'YXZ'); o.scale.set(0.03, 1.6 + R(), 1); return 0; }
     else if (s.r - s.edge > 5) { const rr = s.edge + R() * 4; o.position.set(Math.sin(s.a) * rr, -0.05, Math.cos(s.a) * rr); }
@@ -257,7 +260,7 @@ export function buildWorld(scene, low) {
     return 0.08;
   });
   // low grass in the clearing: short and flattened where the fighting is, longer toward the reeds
-  scatter(low ? 1500 : 6500, stalkGeo('grass'), windMat(0x34381f, 0x77744c, 0x77744c, 0.1), (o) => {
+  const grass = scatter(low ? 1500 : 6500, stalkGeo('grass'), windMat(0x34381f, 0x77744c, 0x77744c, 0.1), (o) => {
     let a, r, tries = 0;
     do { a = R() * Math.PI * 2; r = Math.sqrt(R()) * (inner + 1.8); tries++; } while (tries < 6 && R() > 0.35 + noise.fbm(Math.sin(a) * r * 0.5 + 3, Math.cos(a) * r * 0.5 + 8) * 1.1 - Math.max(0, 5 - r) * 0.06);
     o.position.set(Math.sin(a) * r, 0, Math.cos(a) * r);
@@ -306,6 +309,21 @@ export function buildWorld(scene, low) {
   const flies = new THREE.InstancedMesh(new THREE.SphereGeometry(0.02, 5, 4), new THREE.MeshBasicMaterial({ color: 0xb9cf96, fog: false }), FN);
   const fd = []; for (let i = 0; i < FN; i++) fd.push({ a: R() * 6.28, r: 9 + R() * 20, y: 0.5 + R() * 2.2, s: 0.2 + R() * 0.5, p: R() * 6 });
   flies.frustumCulled = false; scene.add(flies);
+
+  // --- automatic quality tiers (main.js steps down when the measured frame rate is low).
+  // Instances are placed in random order, so drawing a prefix thins the field evenly.
+  const TIER_REEDS = [15000, 9000, 5200, 3800, 3000], TIER_GRASS = [6500, 4200, 2800, 2000, 1500];
+  world.shadows = !low;
+  world.setQuality = (tier) => {
+    reeds.count = Math.min(reedCount, TIER_REEDS[tier]);
+    grass.count = Math.min(grass.instanceMatrix.count, TIER_GRASS[tier]);
+    mists.forEach((m, i) => { m.visible = tier < 3 || i < 6; });    if (tier >= 2 && world.shadows) {
+      // stop the shadow pass: clear the casters, render one last (empty) shadow map, then freeze it
+      world.shadows = false;
+      scene.traverse((o) => { if (o.castShadow && o.isMesh) o.castShadow = false; });
+      moonL.shadow.needsUpdate = true; moonL.shadow.autoUpdate = false;
+    }
+  };
 
   world.update = (t, camera) => {
     for (const m of mists) { const u = m.userData; u.a += u.sp * 0.016; m.position.x = Math.sin(u.a) * u.r; m.position.z = Math.cos(u.a) * u.r; m.lookAt(camera.position.x, m.position.y, camera.position.z); }

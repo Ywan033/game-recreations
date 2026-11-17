@@ -1,6 +1,10 @@
 # 苇月剑决 (Reedmoon Duel) — delivery record
 
-Date: 2026-11-17 · Deliverable: `dist/play.html` (single self-contained file, ~876 kB, 243 kB gzipped)
+Date: 2026-11-17 · Deliverable: `dist/play.html` (single self-contained file, 896.90 kB, 252 kB gzipped)
+
+> The sections below up to "Published page check" describe the first delivery. Where the realism
+> pass changed something, the **Realism pass** section at the end is the current record (look,
+> frame-delta clamp, quality scaling, test results, known issues).
 
 ## Build
 
@@ -145,10 +149,9 @@ above and the read-only probe.
   screen edge; resting it at the left/right edge keeps turning, and the arrow keys also turn.
 - When the fighters are very close the player model can partly cover the kneeling boss; the camera
   is offset to the side and raised to limit this, and ground rings mark both fighters.
-- Animation is pose-blended procedural motion on capsule figures: readable, but simple. The player's
-  scarf is a stiff segmented ribbon.
+- (Resolved in the realism pass: capsule figures, the stiff scarf, and the start-screen text
+  overlapping the fighters.)
 - At very low frame rates the blade trail is drawn as a few large segments.
-- The start screen text overlaps the two fighters standing in the background.
 - No pause function; the fight keeps running if the tab loses focus (held keys are released).
 - Audio starts on the first click/keypress (browser autoplay policy).
 
@@ -175,3 +178,170 @@ https://ywan033.github.io/game-recreations/play/reedmoon-duel.html
 Chromium context (headless): HTTP 200, canvas visible, the fight was started and movement and an
 attack were driven with real keyboard and mouse input, and there were no uncaught page errors.
 Result: PASS. This is a short load-and-input check, not a full fight.
+
+## Realism pass (2026-11-17)
+
+One visual upgrade toward a grounded look, done in two sessions (the first was interrupted after
+the character/lighting work; the second added the low-end performance work, re-verified everything
+and re-captured the screenshots). Combat rules, simulation timings, controls, URL hash options,
+the `window.__game` probe, `tests/online-check.cjs` and the single-file build are unchanged. No
+test assertion was changed. No third-party model or animation was added; everything is still made
+in code.
+
+### What changed
+
+Characters and motion (`src/figure.js`, rewritten):
+
+- Both fighters are humanoid meshes about 7.5 heads tall (1.76 m at scale 1; the Warden is 1.15×):
+  head, jaw and neck, shoulders, ribcage tapering to the waist, pelvis, upper and lower arms,
+  hands, thighs, knees, calves, feet. Collision shapes are untouched.
+- Layered clothing: pale under-robe showing at the neck, outer robe with two overlapping collar
+  bands, sash with knot and hanging ends, leather bracers, leg wraps, shoes with soles, trousers.
+  The Reedcutter has a short robe skirt, tied-back hair, a headband with loose tails and a scabbard;
+  the Warden keeps its own silhouette with a wide woven hat, two-layer thatch mantle, back cloak,
+  long split robe skirt and a pale beaked mask. The stiff segmented scarf is gone; skirts, cloak,
+  sash ends and headband tails are hinged panels driven by a spring (trail behind motion, hang with
+  gravity, pushed out by the legs).
+- Grip and stance: the sword is posed first and both arms reach the hilt by two-bone IK (right hand
+  under the guard, left at the pommel; one-hand poses where the move calls for it), with the hand
+  aligned along the blade. Guard holds the blade across the body.
+- Motion: pose targets for idle, run, guard, deflect, three cuts (wind-up / hit / follow-through),
+  thrust, stagger, kneel, pinned, bind, step, finisher (hook, wheel, rising cut) and falls. Hips
+  blend faster than the chest and the blade trails; shoulders counter-rotate against the stride;
+  feet plant in world space and step when they fall behind, the pelvis drops until both planted feet
+  are in reach (knees bend), and each footfall dips the body. The deflect snaps to its own pose for
+  0.2 s and both fighters get spring recoil (the Warden's blade is thrown wide, alternating sides
+  along a chain). Presentation only: the simulation code (`src/sim.js`) was not edited.
+
+Lighting and field (`src/world.js`):
+
+- One key light: a low pale moon. Sky sheen, the directional light, the shadow map (2048², was
+  1024²) and a moon-side fresnel rim on every character material all read the same direction. The
+  only other lights are a dim sky hemisphere and a faint bounce from the opposite side.
+- Reeds: three stalk meshes (leafed reed with a one-sided plume, snapped stalk, grass tuft); height,
+  density and sway amplitude follow noise fields, about 9 % of stalks are bent, snapped stalks stand
+  along the inner edge and some lie flat on the rim; plumes pass a little moonlight.
+- Ground: generated albedo, roughness and normal maps (trampled grass, dry and wet soil, muddy rim,
+  heel scars) instead of a flat tint. Mist is thin sheets at two heights outside the clearing.
+- Start screen: the title and controls are a column on the right; the two fighters and the moon
+  stand clear on the left.
+- Palette: the first delivery used an amber moon and teal dusk (see "Departure" above). This pass
+  moved to pale moonlight over a dark fen for the realistic look that was asked for; the arena
+  design (islet, water under the reeds, poles with cloth streamers) and both characters remain this
+  game's own.
+
+Fixes made in the second session after looking at the after-screenshots:
+
+- Fighters were too dark against the ground at the combat camera: wider and stronger moon rim,
+  exposure 1.3 → 1.5.
+- At the reed boundary the free camera was pushed up into a top-down view with leaves across the
+  lens, and a stalk next to the camera showed as a bright line across the explore shot. Reeds
+  within 3–6 m of the camera now lie down (vertex shader), the camera may back up to 3.4 m into the
+  reed belt, and it is lifted less.
+- The last line of the start-screen text was clipped at 1280×720; spacing tightened.
+
+### Low-end performance (brief item 4)
+
+Cause: the new look draws about 15 000 leafed reed instances and 6 500 grass tufts (was 9 000 and
+5 000 single blades), a 2048² shadow pass, 4× MSAA and heavier materials. On a software rasteriser
+this fell to about 2 fps, and because the frame delta was clamped to 50 ms the 2.2 s intro took
+about 20 s of wall time, so the published-page check timed out in `intro`.
+
+Changes (`src/main.js`, `src/world.js`, `src/figure.js`):
+
+- Automatic quality scaling. Frame times are measured continuously (windows of ≥ 8 frames /
+  ≥ 0.6 s, the frames right after a change are skipped). Below 27 fps the game steps down one tier,
+  below 14 fps two, below 6 fps three; it never steps back up. Tiers 0–4: reed instances
+  15 000 / 9 000 / 5 200 / 3 800 / 3 000, grass 6 500 / 4 200 / 2 800 / 2 000 / 1 500, render scale
+  full / 1 / 1 / 0.75 / 0.55, shadow-map pass on for tiers 0–1 and replaced by soft contact shadows
+  under the fighters from tier 2, half the mist sheets from tier 3. Instances are placed in random
+  order, so drawing fewer thins the field evenly.
+- A software renderer (SwiftShader, llvmpipe, a WebGPU fallback adapter) is recognised at start-up:
+  it gets no MSAA and starts at tier 2; the measured frame rate then decides the rest.
+- Outside the fight (title, intro, result) the frame-delta clamp is 250 ms, so slow frames no longer
+  stall the opening. During the fight it is still 50 ms (slow frames slow the duel instead of
+  skipping simulation). Character springs are sub-stepped so long frames cannot destabilise them.
+- The current tier is shown in the corner label (`WebGL 2 · Q4`) and in the probe
+  (`snap.quality`). `#auto=0` turns the scaling off (used for the "before" numbers below).
+- `tests/online-check.cjs` and its timeouts are unchanged.
+
+Measured frame rates, 1280×720, default quality, this machine, headless
+(`node tests/measure-fps.mjs`, fight started with a real Enter key press):
+
+| Path | Before the fix | After |
+| --- | --- | --- |
+| Software WebGL 2 (bundled Chromium, SwiftShader — the launcher's kind of browser) | 2.3 fps, online check timed out in `intro` | 14–15 fps (tier 4), intro 2.1 s, online check passes in 6.4 s |
+| Software WebGPU (Chrome, `--use-webgpu-adapter=swiftshader`) | 2.2 fps, intro 3.8 s (`#auto=0`: same build with scaling off, MSAA on) | 14 fps (tier 4), intro 2.2 s, online check passes in 4.8 s |
+| Software WebGL 2 at tier 2 only (`#auto=0`) | — | 7 fps |
+| Hardware WebGPU (Chrome) | — | 150–195 fps unthrottled, stays at tier 0 |
+| Hardware WebGL 2 (bundled Chromium with GPU flags, `#gl=1`) | — | 60 fps, stays at tier 0 |
+
+For reference, the first delivery (before the realism pass) recorded about 4 fps on software
+WebGL 2 at full quality and an online check of 18.3 s.
+
+### Comparison images
+
+Same script, seed and input steps for both sets: `node tests/compare-shots.mjs before|after`
+(`npm run shots:compare`), 1280×720, default quality, `#seed=3&hurt=0.05&mute=1`, real keyboard and
+mouse input. The after set was captured in installed Google Chrome, headless, with WebGPU flags;
+the page reported backend **WebGPU**. The before set was captured by the first session with the
+same script and was not regenerated; which browser it used was not recorded.
+
+- `compare/before-title.png` → `compare/after-title.png`
+- `compare/before-explore.png` → `compare/after-explore.png`
+- `compare/before-combat.png` → `compare/after-combat.png`
+- Review shots looked at for this pass (`--extra`): `compare/review/after-boundary.png` (reed
+  boundary), `after-turn.png` and `after-turn-settled.png` (fast turn), `after-locked.png` and
+  `after-locked2.png` (locked-on view), `after-contact.png`, `after-cut.png`, and two close crops.
+- `compare/lowtier-title.png`, `-explore.png`, `-combat.png`: the same steps on software WebGL 2
+  (`--gl`), showing the tier-4 picture a GPU-less machine gets.
+- `compare/review/gallery-*.png` are pose-gallery sheets from the first session (`#gallery=`
+  dev option); they predate the second session's lighting changes and were not re-captured.
+
+### Verification (real input unless stated)
+
+The offline suite, the two online-check runs marked "final" and the after-screenshots were run on
+the final build. The software-WebGPU smoke run and the frame-rate table were run on the build just
+before the last change, which only tightened start-screen CSS spacing.
+
+- `npm ci`, `npm run build`, `npm run install:browsers`, `npm run test:offline`: all exit 0.
+- **WebGL 2 (software), full offline suite**: `npm run test:offline` → PASSED, 52 checks, 0 page
+  errors, no network requests; ~18 fps at 800×450 with `q=low`. Run three times in this session
+  (after the scaling change, after the camera/lighting fixes, on the final build); all passed.
+  Covers start, movement, attack, guard, deflect, chained deflects (chain of 5), step-in counter
+  (3 of 4 thrusts on the final run), stance break, phase change, second finisher and victory,
+  defeat, retry, lock-on camera.
+- **WebGL 2 (software), online check** (final): `node tests/run-online-check.mjs` → passed in 6.4 s.
+- **WebGPU (hardware), smoke run** (final): `node tests/run-online-check.mjs --webgpu` (Chrome) → passed in
+  3.8 s; page reported WebGPU, tier 0, shadows on. It clicks Begin, checks the scene is not blank,
+  moves with A and attacks with the mouse. The after-screenshots were also taken on this path and
+  show both characters.
+- **WebGPU (software adapter), smoke run**: `node tests/run-online-check.mjs --swgpu` → passed in
+  4.8 s, tier 4.
+- **WebGL 2 (hardware)**: only the frame-rate run above (Enter to start, 60 fps, tier 0); no
+  screenshot was inspected on this path.
+- Code-level, not real input: `npm run test:sim` → passed (seeds 1–4).
+- No state injection anywhere; `window.__game.snap` gained a read-only `quality` field.
+
+### `play.html` size
+
+876 kB (243 kB gzipped) before the realism pass → 896.90 kB (252.04 kB gzipped) after.
+
+### Problems that remain
+
+- On a software renderer the picture is 14–15 fps at 0.55 render scale with thin reeds and no
+  shadow map: playable and correct, visibly coarse. Below 20 fps the duel still runs in slow motion
+  (50 ms clamp).
+- The full offline suite was not run on WebGPU, only the smoke runs above.
+- The quality tier only steps down; a machine that was briefly busy at start-up stays at the lower
+  tier until the page is reloaded.
+- At the lock-on camera height the Warden reads mostly as hat and mantle from above, and both
+  fighters are small in frame; the camera distance was left as delivered.
+- Running uses a long, low stride that can look like a lunge in a still frame.
+- Limbs are rigid segments with sphere joints and cloth is hinged panels: no skinning, no cloth
+  simulation, no fingers, no facial detail. Panels seen edge-on can show as thin bright lines.
+- Reeds near the camera lie down rather than fade, which is visible as a cleared patch when the
+  camera backs into the reed belt. Moon shadows are long (the moon is low) and soft-edged only as
+  far as a 2048² map allows.
+- Not judged by a human player: feel and weight of the motion were assessed from screenshots only.
+  Audio is unchanged and still unverified by ear.

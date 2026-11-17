@@ -54,11 +54,13 @@ kbd { display: inline-block; min-width: 1.2em; padding: .08em .45em; margin: 0 .
 .screen button:hover { background: rgba(90,52,24,.85); box-shadow: 0 0 22px rgba(240,170,100,.5); }
 .screen button small { opacity: .6; font-size: .6em; letter-spacing: .05em; }
 /* start screen: a text column on the right, leaving the two fighters and the moon clear on the left */
-#title { left: auto; width: min(47vw, 660px); align-items: flex-start; justify-content: flex-start; text-align: left; padding: 5vh 3vw 3vh 7vw; background: linear-gradient(90deg, rgba(3,8,12,0) 0, rgba(3,8,12,.72) 20%, rgba(3,8,12,.9) 100%); }
+#title { left: auto; width: min(47vw, 660px); align-items: flex-start; justify-content: flex-start; text-align: left; padding: 3vh 3vw 2vh 7vw; background: linear-gradient(90deg, rgba(3,8,12,0) 0, rgba(3,8,12,.72) 20%, rgba(3,8,12,.9) 100%); }
 #title h1 { font-size: clamp(34px, 7.4vh, 76px); letter-spacing: .22em; white-space: nowrap; }
 #title h2 { letter-spacing: .42em; }
 #title .lead { margin: 1.4vh 0 .4vh; }
-#title button { margin: 1.4vh 0 1.8vh; }
+#title button { margin: 1.2vh 0 1.4vh; padding: 9px 38px; }
+#title ul { margin: .6vh 0 0; line-height: 1.45; }
+#title li { margin: .5vh 0; }
 #title td { padding: .32vh 12px .32vh 0; }
 #title td:first-child { padding-right: 18px; }
 @media (max-aspect-ratio: 5/4) { #title { left: 0; width: auto; background: rgba(3,8,12,.82); padding: 3vh 5vw; } }

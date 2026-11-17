@@ -4,7 +4,10 @@
 An original third-person 3D boss-fight prototype: one islet of low grass in a reed fen at moonrise,
 the Reedcutter against the Fen Warden, two stance breaks to win.
 
-- 场地 Arena：低草空地，外围高苇与系布条的木桩标出边界；琥珀色大月、青蓝暮色、薄雾、萤火、远山剪影。
+- 场地 Arena：低草空地，外围高苇与系布条的木桩标出边界；一轮低垂的冷月作唯一主光，薄雾、萤火、远山剪影。
+  A low pale moon is the single key light (shadows and rim light follow it); soil-and-trampled-grass ground, wind-driven reeds of varied height.
+- 角色 Characters：约 7.5 头身的人形剑客，分层衣着（里衣、交领外袍、腰带、护臂、绑腿），双手握刀，脚步落地不滑；全部由代码生成。
+  Humanoid fighters (~7.5 heads) with layered clothing, two-hand grip via IK, planted feet; all built in code.
 - 玩家 Player：斩、架刀、拨锋（及时架刀）、连续拨锋、踏步、踏锁；生命与重心两条槽。
 - Boss 泽守：三连斩、双斩、重劈、不可架挡的突刺（紫焰 + 笛啸预警）；二幕新增五连、虚招接突刺、跃劈，节奏更快。
 - 流程 Flow：开场 → 一幕 → 失衡 → 月轮（终结技）→ 二幕 → 失衡 → 月轮 → 胜利；生命耗尽则失败；均可重来。
@@ -43,7 +46,14 @@ npm run install:browsers # 安装测试用 Chromium
 npm run test:offline     # 离线实机输入测试 real-input offline suite
 npm run test:sim         # 代码级模拟测试 code-level simulation test (no browser)
 npm run dev              # 开发服务器 → http://localhost:5173/play.html
+npm run shots:compare    # 对比截图 → compare/after-*.png (node tests/compare-shots.mjs <prefix> [--gl] [--extra])
+npm run test:online-check  # 发布页检查脚本的本地运行 (node tests/run-online-check.mjs [url] [--webgpu|--swgpu])
+node tests/measure-fps.mjs # 帧率测量 frame-rate measurement ([--chrome] [--gpu|--swgpu] [--hash=gl=1])
 ```
+
+画质自动调节：帧率偏低时自动降档（减少苇草数量、关闭阴影贴图、降低渲染分辨率），右下角显示当前档位（如 `WebGL 2 · Q4`）。
+Automatic quality scaling: when the measured frame rate is low the game steps down a tier (fewer reeds, no shadow map,
+lower render scale); the corner label shows the tier. `compare/` holds the before/after screenshots of the realism pass.
 
 试玩：直接双击 `dist/play.html`（`file://`，无需网络）。
 To play: double-click `dist/play.html` (works from `file://` with no network).
@@ -60,6 +70,8 @@ To play: double-click `dist/play.html` (works from `file://` with no network).
 | `q=low` | 低画质（少苇、无阴影、像素比 1）low quality for software renderers |
 | `mute=1` | 静音启动 start muted |
 | `gl=1` | 强制 WebGL 2 后端 force the WebGL 2 backend |
+| `auto=0` | 关闭画质自动调节 turn automatic quality scaling off |
+| `gallery=player\|boss` | 开发用姿势陈列 dev pose gallery (`gy` 朝向 yaw, `gp` 页 page) |
 
 `window.__game.snap` 是只读状态探针（供测试观察，不可写入）。`window.__game.snap` is a read-only state probe for tests.
 

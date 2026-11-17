@@ -7,7 +7,7 @@ import { Figure, playerPose, bossPose, POSE_NAMES } from './figure.js';
 import { Fx } from './fx.js';
 import { Sound } from './audio.js';
 
-// Documented test/debug options in the URL hash: #seed=7&gain=2&hurt=3&q=low&mute=1&gl=1
+// Documented test/debug options in the URL hash: #seed=7&gain=2&hurt=3&q=low&mute=1&gl=1&auto=0
 const opt = new URLSearchParams(location.hash.slice(1));
 const num = (k) => (opt.has(k) && isFinite(+opt.get(k)) ? +opt.get(k) : undefined);
 const low = opt.get('q') === 'low';
@@ -17,11 +17,31 @@ const sim = createSim({ seed: num('seed'), gain: num('gain'), hurt: num('hurt') 
 const sound = new Sound();
 if (opt.get('mute') === '1') sound.muted = true;
 
+// A software rasteriser (no hardware GPU) is recognised up front so it never pays for MSAA; the
+// frame-rate governor below then picks the tier from measured frame times.
+async function softwareGPU() {
+  const soft = /swiftshader|llvmpipe|softpipe|software|basic render/i;
+  try {
+    if (navigator.gpu && opt.get('gl') !== '1') {
+      const ad = await navigator.gpu.requestAdapter(), info = (ad && ad.info) || {};
+      if (ad && (ad.isFallbackAdapter || info.isFallbackAdapter || soft.test([info.vendor, info.architecture, info.device, info.description].join(' ')))) return true;
+    }
+  } catch (e) { /* fall through to the WebGL probe */ }
+  try {
+    const gl = document.createElement('canvas').getContext('webgl2');
+    const ext = gl && gl.getExtension('WEBGL_debug_renderer_info');
+    const name = ext ? String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL)) : '';
+    const lose = gl && gl.getExtension('WEBGL_lose_context'); if (lose) lose.loseContext();
+    return soft.test(name);
+  } catch (e) { return false; }
+}
+const software = await softwareGPU();
+
 async function makeRenderer() {
   let err;
   for (const forceWebGL of opt.get('gl') === '1' ? [true] : [false, true]) {
     try {
-      const r = new THREE.WebGPURenderer({ antialias: !low, forceWebGL });
+      const r = new THREE.WebGPURenderer({ antialias: !low && !software, forceWebGL });
       await r.init();
       return r;
     } catch (e) { err = e; }
@@ -34,10 +54,9 @@ const backend = renderer.backend && renderer.backend.isWebGPUBackend ? 'WebGPU' 
 renderer.setPixelRatio(low ? 1 : Math.min(window.devicePixelRatio || 1, 1.5));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.3;
+renderer.toneMappingExposure = 1.5;
 renderer.shadowMap.enabled = !low;
 $('view').appendChild(renderer.domElement);
-$('backend').textContent = backend + (low ? ' · low' : '');
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x070b10);
@@ -55,6 +74,45 @@ scene.add(player.root, boss.root, player.trail, boss.trail);
 // faint ground rings: barely there in normal play, bright only while the Warden is Unbalanced
 const mark = (c, o) => { const m = new THREE.Mesh(new THREE.RingGeometry(0.52, 0.6, 32), new THREE.MeshBasicMaterial({ color: c, transparent: true, opacity: o, depthWrite: false, fog: false })); m.rotation.x = -Math.PI / 2; m.position.y = 0.03; scene.add(m); return m; };
 const pMark = mark(0xcfd8e4, 0.1), bMark = mark(0x8fd8cc, 0.14);
+// soft contact shadows under the feet, used when the shadow-map pass is switched off
+const blobTex = (() => {
+  const c = document.createElement('canvas'); c.width = c.height = 64;
+  const g = c.getContext('2d'), gr = g.createRadialGradient(32, 32, 2, 32, 32, 32);
+  gr.addColorStop(0, 'rgba(0,0,0,0.62)'); gr.addColorStop(0.55, 'rgba(0,0,0,0.3)'); gr.addColorStop(1, 'rgba(0,0,0,0)');
+  g.fillStyle = gr; g.fillRect(0, 0, 64, 64);
+  return new THREE.CanvasTexture(c);
+})();
+const blob = (s) => { const m = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ map: blobTex, transparent: true, depthWrite: false })); m.rotation.x = -Math.PI / 2; m.scale.set(1.5 * s, 2.3 * s, 1); m.position.y = 0.02; m.visible = false; scene.add(m); return m; };
+const pBlob = blob(1), bBlob = blob(1.2);
+
+// ---------------------------------------------------------------- automatic quality scaling
+// Tier 0 is the full picture. When the measured frame rate is low the governor steps down:
+// fewer reed and grass instances, no shadow-map pass (contact blobs instead), lower render scale.
+// It only ever steps down, so the picture does not flicker between levels.
+const dpr = low ? 1 : Math.min(window.devicePixelRatio || 1, 1.5);
+const TIER_SCALE = [dpr, Math.min(dpr, 1), Math.min(dpr, 1), 0.75, 0.55];
+const quality = { tier: -1, auto: opt.get('auto') !== '0', acc: 0, n: 0, skip: 4, log: [] };
+function setTier(t) {
+  t = Math.max(0, Math.min(TIER_SCALE.length - 1, t));
+  if (t === quality.tier) return;
+  quality.tier = t;
+  renderer.setPixelRatio(TIER_SCALE[t]);
+  world.setQuality(t);
+  pBlob.visible = bBlob.visible = !world.shadows && !gallery;
+  $('backend').textContent = backend + (low ? ' · low' : '') + (t ? ' · Q' + t : '');
+}
+function governQuality(raw) {
+  if (!quality.auto || quality.tier >= TIER_SCALE.length - 1 || document.hidden) return;
+  if (quality.skip > 0) { quality.skip--; return; } // first frames after a change include compile hitches
+  if (raw > 1.5) return; // a stall (tab switch, debugger), not a frame time
+  quality.acc += raw; quality.n++;
+  if ((quality.n >= 8 && quality.acc >= 0.6) || (quality.n >= 3 && quality.acc >= 1.2)) {
+    const f = quality.n / quality.acc;
+    quality.log.push(+f.toFixed(1)); if (quality.log.length > 12) quality.log.shift();
+    if (f < 27) setTier(quality.tier + (f < 6 ? 3 : f < 14 ? 2 : 1));
+    quality.acc = 0; quality.n = 0; quality.skip = 2;
+  }
+}
 
 // Dev option #gallery=player|boss[&gy=<yaw>]: every pose side by side, for checking silhouettes.
 const gallery = opt.get('gallery');
@@ -256,8 +314,9 @@ function updateCamera(dt, t) {
     want.set(p.x - Math.sin(cam.yaw) * cp * 5.6, 1.5 + Math.sin(cam.pitch) * 5.6, p.z - Math.cos(cam.yaw) * cp * 5.6);
     look.set(p.x, 1.35, p.z); rate = 14;
   }
-  const r = Math.hypot(want.x, want.z), maxR = C.ARENA_R + 0.7;
-  if (started && r > maxR) { want.x *= maxR / r; want.z *= maxR / r; want.y += (r - maxR) * 0.35; }
+  // the camera may back a few metres into the reed belt (stalks around it lie down, see world.js)
+  const r = Math.hypot(want.x, want.z), maxR = C.ARENA_R + 3.4;
+  if (started && r > maxR) { want.x *= maxR / r; want.z *= maxR / r; want.y += (r - maxR) * 0.12; }
   cam.pos.lerp(want, 1 - Math.exp(-dt * rate));
   cam.look.lerp(look, 1 - Math.exp(-dt * (rate + 3)));
   camera.position.copy(cam.pos);
@@ -273,7 +332,11 @@ let lastT = performance.now(), acc = 0, frames = 0, fps = 0, fpsAcc = 0, fpsN = 
 function frame() {
   const now = performance.now();
   const raw = (now - lastT) / 1000; lastT = now;
-  const dt = Math.min(0.05, Math.max(0, raw)); // clamped frame delta
+  // Clamped frame delta: 50 ms while fighting (slow frames slow the duel down instead of skipping
+  // it); outside the fight (title, intro, result) up to 250 ms, so a slow renderer does not stall
+  // the opening.
+  const dt = Math.min(started && sim.mode === 'fight' ? 0.05 : 0.25, Math.max(0, raw));
+  governQuality(raw);
   wall += dt; fpsAcc += raw; fpsN++;
   if (fpsAcc >= 0.5) { fps = fpsN / fpsAcc; fpsAcc = 0; fpsN = 0; }
   if (started) {
@@ -293,6 +356,7 @@ function frame() {
   boss.update(still, b.x, b.z, b.face, bp, br, be);
   if (galFigs) for (const g of galFigs) g.f.update(dt, g.x, g.z, g.gy, g.f.poses[g.n], 10);
   pMark.position.set(p.x, 0.03, p.z); bMark.position.set(b.x, 0.03, b.z);
+  if (pBlob.visible) { pBlob.position.set(p.x, 0.02, p.z); pBlob.rotation.z = p.face; bBlob.position.set(b.x, 0.021, b.z); bBlob.rotation.z = b.face; }
   // blade tells: violet for the unguardable lunge, amber while a heavy blow is raised
   const h = sim.nextHit();
   const m = boss.bladeMat;
@@ -324,11 +388,13 @@ Object.defineProperty(window, '__game', {
         camera: { lock: cam.lock, yaw: Math.atan2(cam.fwd.x, cam.fwd.z), x: cam.pos.x, y: cam.pos.y, z: cam.pos.z },
         bossScreen: ndc(b.x, 1.3, b.z), playerScreen: ndc(p.x, 1.0, p.z),
         options: { ...sim.opts, low },
+        quality: { tier: quality.tier, scale: TIER_SCALE[quality.tier], software, shadows: world.shadows, log: quality.log.slice() },
       };
     },
   }),
 });
 
+setTier(software && !low ? 2 : 0);
 updateCamera(0.016, 0);
 cam.pos.set(3.6, 1.55, 9.6); cam.look.set(1.5, 1.3, -0.2);
 if (galFigs) { cam.pos.set(0, 1.9, 8.2); cam.look.set(0, 0.95, 0); }
