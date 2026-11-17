@@ -3,3 +3,6 @@ dist/
 test-results/
 playwright-report/
 run-logs/
+*.log
+.env
+.env.*

@@ -1,0 +1,18 @@
+[
+  {
+    "id": "phantom-blade-zero",
+    "branch": "game/phantom-blade-zero",
+    "title": "雨巷双刃",
+    "titleEn": "Rainlane Blades",
+    "delivery": "rainlane-blades.html",
+    "budgetUsd": 50
+  },
+  {
+    "id": "sekiro",
+    "branch": "game/sekiro",
+    "title": "苇月剑决",
+    "titleEn": "Reedmoon Duel",
+    "delivery": "reedmoon-duel.html",
+    "budgetUsd": 50
+  }
+]
