@@ -7,7 +7,7 @@
 ## 在线试玩
 
 <!-- online-play:start -->
-- **雨巷双刃 (Rainlane Blades)**: [▶ 在线试玩](https://ywan033.github.io/game-recreations/play/rainlane-blades.html)
+- **雨巷双刃 (Rainlane Blades)**: 待上线
 - **苇月剑决 (Reedmoon Duel)**: [▶ 在线试玩](https://ywan033.github.io/game-recreations/play/reedmoon-duel.html)
 <!-- online-play:end -->
 
