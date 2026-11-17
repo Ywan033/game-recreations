@@ -53,6 +53,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\simulate.ps1
 
 # 正式运行
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run-games.ps1 -Run
+
+# 对已交付的游戏做一轮升级（任务说明在 tasks/<id>.<名称>.md）。
+# 新版本通过验收前，现有交付和在线版本保持不变；旧版备份在交付目录的 previous/ 下
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run-games.ps1 -Run -Upgrade realism
 ```
 
 启动器按队列顺序处理每款游戏：

@@ -46,6 +46,7 @@ $queue = '[{"id":"sim-alpha","branch":"game/sim-alpha","title":"Alpha","titleEn"
 [IO.File]::WriteAllText((Join-Path $simRepo 'tasks\queue.json'), $queue, $utf8)
 foreach ($id in 'sim-alpha', 'sim-beta') {
     [IO.File]::WriteAllText((Join-Path $simRepo "tasks\$id.md"), "MARK_TASK_$id brief`n", $utf8)
+    [IO.File]::WriteAllText((Join-Path $simRepo "tasks\$id.polish.md"), "MARK_UPGRADE_$id brief`n", $utf8)
 }
 G $simRepo @('add', '-A') | Out-Null
 G $simRepo @('commit', '-q', '-m', 'sim setup') | Out-Null
@@ -67,6 +68,15 @@ $prompt = $stdin   # the prompt arrives on stdin exactly as it does for the real
 $count = @(Get-ChildItem $checks -Filter "$Id.call-*.txt").Count + 1
 $ok = $prompt.Contains('MARK_SHARED') -and $prompt.Contains("MARK_TASK_$Id") -and $prompt.Contains("MARK_GAME_$Id") -and $stdin.Contains("MARK_TASK_$Id")
 $mode = if ($prompt.Contains('Continue the existing work')) { 'continue' } else { 'generate' }
+if ($prompt.Contains('CURRENT TASK') -and $prompt.Contains("MARK_UPGRADE_$Id")) {
+    $mode = 'upgrade'
+    New-Item -ItemType Directory -Force -Path (Join-Path $GameDir 'compare') | Out-Null
+    # sim-beta "forgets" the after shots on its first upgrade session.
+    $kinds = @('before')
+    if (-not ($Id -eq 'sim-beta' -and @(Get-ChildItem $checks -Filter "$Id.upgrade-*.txt").Count -eq 0)) { $kinds += 'after' }
+    foreach ($k in $kinds) { foreach ($n in 'title', 'explore', 'combat') { [IO.File]::WriteAllText((Join-Path $GameDir "compare\$k-$n.png"), 'png', $utf8) } }
+    [IO.File]::WriteAllText((Join-Path $checks "$Id.upgrade-$count.txt"), 'x', $utf8)
+}
 [IO.File]::WriteAllText((Join-Path $checks "$Id.call-$count.txt"), "promptOk=$ok mode=$mode", $utf8)
 # sim-beta fails its offline test on the first call and is fixed on the second.
 $testCmd = 'node -e "process.exit(0)"'
@@ -134,6 +144,18 @@ $files = (G $bare @('ls-tree', '-r', '--name-only', 'game/sim-beta')) -join ' '
 Check 'milestone commit excludes dist and node_modules' ($files -match 'games/sim-beta/package.json' -and $files -notmatch 'dist/' -and $files -notmatch 'node_modules')
 $msgs = (G $bare @('log', '--all', '--format=%an|%B')) -join ' '
 Check 'commit messages carry no tool attribution' ($msgs -notmatch '(?i)claude|anthropic|co-authored')
+
+Write-Host 'Run 3 (upgrade pass on delivered games, no repairs):'
+$alphaBefore = Get-Content (Join-Path $simDeliv 'alpha-out.html') -Raw
+$r = Run-Launcher @('-Run', '-NotifyMode', 'log', '-Upgrade', 'polish', '-MaxRepairs', '0') 'run3'
+Check 'run 3 exits non-zero: beta upgrade missed its required files' ($r.Code -eq 1)
+Check 'alpha upgrade session received the upgrade brief' (@(Get-ChildItem $checks -Filter 'sim-alpha.upgrade-*.txt').Count -eq 1)
+Check 'alpha delivery replaced after passing' ((Get-Content (Join-Path $simDeliv 'alpha-out.html') -Raw) -ne $alphaBefore)
+Check 'alpha previous delivery kept' ((Get-Content (Join-Path $simDeliv 'previous\alpha-out.before-polish.html') -Raw) -eq $alphaBefore)
+Check 'alpha upgrade recorded and pushed' ((State 'sim-alpha').upgradeDone -eq 'polish' -and (State 'sim-alpha').push -eq 'pushed')
+Check 'beta failed upgrade leaves delivery and status untouched' ((State 'sim-beta').status -eq 'delivered' -and (State 'sim-beta').upgradeDone -ne 'polish' -and (Get-Content (Join-Path $simDeliv 'beta-out.html') -Raw) -match 'call 2')
+$r = Run-Launcher @('-Run', '-NotifyMode', 'log', '-Upgrade', 'polish') 'run4'
+Check 'run 4: alpha upgrade skipped, beta upgrade resumed and delivered' ($r.Code -eq 0 -and @(Get-ChildItem $checks -Filter 'sim-alpha.upgrade-*.txt').Count -eq 1 -and (State 'sim-beta').upgradeDone -eq 'polish')
 
 $failed = @($results | Where-Object { -not $_.Ok })
 Write-Host ("Simulation: {0} passed, {1} failed. Sandbox kept at {2}" -f ($results.Count - $failed.Count), $failed.Count, $sim)

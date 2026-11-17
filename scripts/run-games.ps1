@@ -7,6 +7,8 @@ param(
     [ValidateRange(1, 1000)]
     [double]$BudgetPerGame = 50,
     [string]$Only = '',
+    # Name of an upgrade pass for already delivered games; uses tasks\<id>.<name>.md.
+    [string]$Upgrade = '',
     [int]$MaxRepairs = 3,
     [int]$SessionTimeoutMinutes = 240,
     [int]$MaxLimitWaitMinutes = 420,
@@ -82,7 +84,7 @@ function Get-State {
     $path = Join-Path $stateDir "$Id.json"
     $s = @{
         status = 'pending'; offline = 'pending'; spent = 0.0; sessions = 0
-        commit = ''; push = 'none'; reason = ''; deliveredAt = ''; pages = 'none'; pagesUrl = ''
+        commit = ''; push = 'none'; reason = ''; deliveredAt = ''; pages = 'none'; pagesUrl = ''; upgradeDone = ''
     }
     if (Test-Path -LiteralPath $path -PathType Leaf) {
         $saved = Read-Utf8 $path | ConvertFrom-Json
@@ -123,6 +125,7 @@ function Get-OnlineText {
 function Write-Readme-Online {
     $labels = Read-Utf8 (Join-Path $repo 'scripts\progress-labels.json') | ConvertFrom-Json
     $path = Join-Path $repo 'README.md'
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return }
     $text = Read-Utf8 $path
     $a = $text.IndexOf('<!-- online-play:start -->')
     $b = $text.IndexOf('<!-- online-play:end -->')
@@ -276,7 +279,23 @@ function New-Prompt {
     $gameRules = '(none provided)'
     if (Test-Path -LiteralPath $gameDoc -PathType Leaf) { $gameRules = Read-Utf8 $gameDoc }
 
-    if ($Mode -eq 'generate') {
+    $upgradeBrief = ''
+    if ($Upgrade) {
+        $upPath = Join-Path $repo "tasks\$id.$Upgrade.md"
+        if (Test-Path -LiteralPath $upPath -PathType Leaf) {
+            $upgradeBrief = "`n===== CURRENT TASK: UPGRADE BRIEF (tasks/$id.$Upgrade.md) =====`n" + (Read-Utf8 $upPath) + "`n"
+        }
+    }
+    if ($Mode -eq 'upgrade') {
+        $head = @"
+The game in games/$id is already delivered and its checks pass. Your task
+now is the upgrade brief below (section CURRENT TASK). Work on the existing
+code; do not start over. Keep combat rules, controls, test options, the
+state probe, and the existing tests working. Keep all changes inside that
+game directory. Do not commit, push, publish, or request intermediate
+reviews.
+"@
+    } elseif ($Mode -eq 'generate') {
         $head = @"
 Implement this game autonomously in games/$id in the current worktree.
 Keep all project changes inside that game directory. Do not commit, push,
@@ -307,7 +326,7 @@ $brief
 
 ===== GAME RULES (games/$id/CLAUDE.md) =====
 $gameRules
-
+$upgradeBrief
 ===== LAUNCHER CONTRACT =====
 Provide npm scripts named build, install:browsers, and test:offline.
 The build must produce dist/play.html. install:browsers must install
@@ -384,8 +403,8 @@ function Invoke-Session {
 # ---------- verification ----------
 
 function Invoke-Verify {
-    param([string]$Game, [string]$Log)
-    foreach ($file in 'package.json', 'package-lock.json', 'DELIVERY.md') {
+    param([string]$Game, [string]$Log, [string[]]$ExtraFiles = @())
+    foreach ($file in (@('package.json', 'package-lock.json', 'DELIVERY.md') + $ExtraFiles)) {
         if (-not (Test-Path -LiteralPath (Join-Path $Game $file) -PathType Leaf)) {
             [System.IO.File]::AppendAllText($Log, "Missing deliverable: $file`r`n", $utf8)
             return "missing $file"
@@ -418,7 +437,7 @@ function Invoke-Verify {
 # ---------- milestone ----------
 
 function Invoke-Milestone {
-    param($Job)
+    param($Job, [string]$Message = '')
     $id = $Job.id
     $tree = Join-Path $trees $id
     $s = Get-State $id
@@ -439,7 +458,7 @@ function Invoke-Milestone {
         return 'pending'
     }
     if ($staged.Count -gt 0) {
-        $msg = "Deliver $($Job.titleEn) ($id): source, docs, and offline tests"
+        $msg = if ($Message) { $Message } else { "Deliver $($Job.titleEn) ($id): source, docs, and offline tests" }
         $r = Invoke-Git $tree @('commit', '-q', '-m', $msg)
         if ($r.Code -ne 0) { Write-Log "[GIT] commit failed for ${id}: $($r.Out -join ' ')"; return 'pending' }
         Write-Log "[GIT] Committed $($staged.Count) files on $($Job.branch)"
@@ -512,6 +531,7 @@ foreach ($job in $queue) {
     $brief = Join-Path $repo "tasks\$($job.id).md"
     if (-not (Test-Path -LiteralPath $tree -PathType Container)) { throw "Missing worktree: $tree" }
     if (-not (Test-Path -LiteralPath $brief -PathType Leaf)) { throw "Missing brief: $brief" }
+    if ($Upgrade -and -not (Test-Path -LiteralPath (Join-Path $repo "tasks\$($job.id).$Upgrade.md") -PathType Leaf)) { throw "Missing upgrade brief: tasks\$($job.id).$Upgrade.md" }
     $branch = "$((Invoke-Git $tree @('branch', '--show-current')).Out[0])".Trim()
     if ($branch -ne $job.branch) { throw "Expected $($job.branch) in $tree, found '$branch'" }
     $gameDoc = Join-Path $tree "games\$($job.id)\CLAUDE.md"
@@ -562,8 +582,11 @@ foreach ($job in $queue) {
     $budget = Get-JobBudget $job
     $s = Get-State $id
 
+    $isUpgrade = $false
     try {
-        if ((Test-Path -LiteralPath $target -PathType Leaf) -and $s.status -eq 'delivered') {
+        $delivered = (Test-Path -LiteralPath $target -PathType Leaf) -and $s.status -eq 'delivered'
+        $isUpgrade = [bool]$Upgrade -and $delivered -and ($s.upgradeDone -ne $Upgrade)
+        if ($delivered -and -not $isUpgrade) {
             Write-Log "[SKIP] $id already delivered: $target"
             if ($s.push -ne 'pushed') {
                 $push = Invoke-Milestone $job
@@ -578,7 +601,8 @@ foreach ($job in $queue) {
             continue
         }
         if ($batchBlocked) {
-            $s.status = 'blocked'; $s.reason = $batchBlocked
+            if (-not $isUpgrade) { $s.status = 'blocked' }
+            $s.reason = $batchBlocked
             Save-State $id $s
             $incomplete += $id
             Write-Log "[BLOCKED] $id not started: $batchBlocked"
@@ -590,13 +614,22 @@ foreach ($job in $queue) {
         if ($ff.Code -ne 0) { Write-Log "[WARN] $id could not fast-forward to main: $($ff.Out -join ' ')" }
 
         New-Item -ItemType Directory -Force -Path $game | Out-Null
-        $s.status = 'developing'; $s.reason = ''
+        if (-not $isUpgrade) { $s.status = 'developing' }
+        $s.reason = ''
         Save-State $id $s
         Write-Progress-File
 
         $failure = ''
         $needSession = -not (Test-Path -LiteralPath (Join-Path $game 'package.json') -PathType Leaf)
         $mode = if ($needSession) { 'generate' } else { 'continue' }
+        $extraFiles = @()
+        if ($isUpgrade) {
+            $needSession = $true
+            $mode = 'upgrade'
+            $extraFiles = @('compare\before-title.png', 'compare\before-explore.png', 'compare\before-combat.png',
+                            'compare\after-title.png', 'compare\after-explore.png', 'compare\after-combat.png')
+            Write-Log "[UPGRADE] $id pass '$Upgrade' on the delivered game; current delivery stays until the new build passes."
+        }
         $ok = $false
         $round = 0
         while ($true) {
@@ -623,11 +656,13 @@ foreach ($job in $queue) {
                     if ($null -ne $wait -and $wait -le $MaxLimitWaitMinutes) {
                         if ($wait -lt 1) { $wait = 1 }
                         Write-Log "[LIMIT] Usage limit hit; reset at $($res.ResetAt). Waiting $wait minutes, then continuing $id."
-                        $s.status = 'blocked'; $s.reason = "usage limit; auto-resume after $($res.ResetAt)"
+                        if (-not $isUpgrade) { $s.status = 'blocked' }
+                        $s.reason = "usage limit; auto-resume after $($res.ResetAt)"
                         Save-State $id $s
                         Write-Progress-File
                         Start-Sleep -Seconds ($wait * 60)
-                        $s.status = 'developing'; $s.reason = ''
+                        if (-not $isUpgrade) { $s.status = 'developing' }
+                        $s.reason = ''
                         $mode = 'continue'
                         $failure = 'The previous session stopped because the account usage limit was reached. Continue from the files on disk.'
                         $round--
@@ -639,19 +674,19 @@ foreach ($job in $queue) {
                 }
             }
 
-            $s.status = 'verifying'
+            if (-not $isUpgrade) { $s.status = 'verifying' }
             Save-State $id $s
             Write-Progress-File
             $verifyLog = Join-Path $runLogs "$id.verify-$round.log"
             [System.IO.File]::WriteAllText($verifyLog, '', $utf8)
             Write-Log "[VERIFY] $id round $round. Log: $verifyLog"
-            $failStep = Invoke-Verify $game $verifyLog
+            $failStep = Invoke-Verify $game $verifyLog $extraFiles
             if (-not $failStep) { $ok = $true; break }
 
             Write-Log "[VERIFY] $id failed: $failStep"
             $tail = (Get-Content -LiteralPath $verifyLog -Tail 120 -Encoding UTF8) -join "`n"
             $failure = "The launcher's verification failed at step: $failStep`nLast lines of the verification log:`n$tail"
-            $s.status = 'developing'; $s.offline = 'failed'
+            if (-not $isUpgrade) { $s.status = 'developing'; $s.offline = 'failed' }
             Save-State $id $s
             $needSession = $true
             $mode = 'continue'
@@ -660,6 +695,18 @@ foreach ($job in $queue) {
 
         if ($ok) {
             $html = Join-Path $game 'dist\play.html'
+            $commitMsg = ''
+            if ($isUpgrade) {
+                $prevDir = Join-Path $deliveries 'previous'
+                New-Item -ItemType Directory -Force -Path $prevDir | Out-Null
+                $prevName = [System.IO.Path]::GetFileNameWithoutExtension($job.delivery) + '.before-' + $Upgrade + '.html'
+                Copy-Item -LiteralPath $target -Destination (Join-Path $prevDir $prevName) -Force
+                Write-Log ("[UPGRADE] Previous delivery kept at {0} ({1} bytes); new build is {2} bytes" -f (Join-Path $prevDir $prevName), (Get-Item -LiteralPath $target).Length, (Get-Item -LiteralPath $html).Length)
+                $s.upgradeDone = $Upgrade
+                $s.push = 'pending'
+                $s.pages = 'none'
+                $commitMsg = "$($job.titleEn): $Upgrade visual pass, verified offline"
+            }
             Copy-Item -LiteralPath $html -Destination "$target.tmp" -Force
             Move-Item -LiteralPath "$target.tmp" -Destination $target -Force
             $s.status = 'delivered'; $s.offline = 'passed'; $s.reason = ''
@@ -667,11 +714,15 @@ foreach ($job in $queue) {
             Save-State $id $s
             Write-Progress-File
             Write-Log "[DELIVERED] $id -> $target"
-            $push = Invoke-Milestone $job
+            $push = Invoke-Milestone $job $commitMsg
             $pushText = if ($push -eq 'pushed') { "GitHub: pushed $($job.branch)" } else { 'GitHub: push pending (local delivery kept)' }
             $pg = Invoke-Pages $job
             $pgText = if ($pg -eq 'verified') { "Online: $((Get-State $id).pagesUrl)" } else { 'Online: pending' }
             Send-Notice "$($job.title) ($($job.titleEn)) delivered" "$target | $pushText | $pgText"
+        } elseif ($isUpgrade) {
+            Save-State $id $s
+            $incomplete += $id
+            Write-Log "[UPGRADE-INCOMPLETE] ${id}: $($s.reason). The previous delivery is unchanged."
         } else {
             $s.status = if ($s.reason -match 'limit|budget') { 'blocked' } else { 'failed' }
             Save-State $id $s
@@ -680,7 +731,8 @@ foreach ($job in $queue) {
             Write-Log "[$($s.status.ToUpper())] ${id}: $($s.reason)"
         }
     } catch {
-        $s.status = 'failed'; $s.reason = "launcher error: $($_.Exception.Message)"
+        if (-not $isUpgrade) { $s.status = 'failed' }
+        $s.reason = "launcher error: $($_.Exception.Message)"
         Save-State $id $s
         $incomplete += $id
         Write-Log "[FAILED] $id launcher error: $($_ | Out-String)"
@@ -692,7 +744,9 @@ try { Sync-Progress 'Update progress' } catch { Write-Log "[GIT] Progress sync e
 
 if ($incomplete.Count -gt 0) {
     Write-Log ("Incomplete: " + ($incomplete -join ', '))
-    Write-Log 'Resume: powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run-games.ps1 -Run'
+    $resume = 'Resume: powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run-games.ps1 -Run'
+    if ($Upgrade) { $resume += " -Upgrade $Upgrade" }
+    Write-Log $resume
     exit 1
 }
 Write-Log 'All queued games are delivered.'
