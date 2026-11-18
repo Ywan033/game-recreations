@@ -31,9 +31,25 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // default: bundled Chromium on software rendering (the launcher's environment; the page reports WebGL 2).
 // --gpu: installed Chrome with hardware flags, to run the same suite on the WebGPU backend (extra coverage, not part of test:offline).
+// If the headless shell cannot create a WebGL 2 context at all (seen on this machine: its SwiftShader
+// fallback stopped working), the bundled full Chromium (installed by the same `playwright install
+// chromium`) is used instead with the game's WebGL 2 backend forced by the documented #gl=1 option.
+const SOFT = ['--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'];
+let extraHash = '', browserName = 'installed Chrome with hardware flags (--gpu)';
+async function launchDefault() {
+  let b = await chromium.launch({ args: SOFT });
+  const p = await b.newPage(), has = await p.evaluate(() => !!document.createElement('canvas').getContext('webgl2')).catch(() => false);
+  await p.close();
+  if (has) { browserName = 'bundled Chromium headless shell'; return b; }
+  await b.close();
+  b = await chromium.launch({ channel: 'chromium', args: SOFT });
+  extraHash = '&gl=1'; browserName = 'bundled full Chromium, new headless (the headless shell gave no WebGL 2 context), #gl=1';
+  return b;
+}
 const browser = process.argv.includes('--gpu')
   ? await chromium.launch({ channel: 'chrome', args: ['--enable-unsafe-webgpu', '--enable-features=Vulkan', '--ignore-gpu-blocklist', '--use-angle=d3d11', '--enable-gpu'] })
-  : await chromium.launch({ args: ['--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
+  : await launchDefault();
+console.log('browser: ' + browserName);
 const pageErrors = [];
 const external = [];
 
@@ -48,7 +64,7 @@ async function open(hash) {
   const page = await context.newPage();
   page.on('pageerror', (e) => pageErrors.push(`${hash}: ${e.message}`));
   page.on('crash', () => pageErrors.push(`${hash}: page crashed`));
-  await page.goto(url + '#' + hash);
+  await page.goto(url + '#' + hash + extraHash);
   await page.waitForFunction(() => window.__game && window.__game.snap.frames > 3, null, { timeout: 90000 });
   const snap = () => page.evaluate(() => window.__game.snap);
   const until = async (cond, label, timeout = 30000) => {
@@ -203,10 +219,19 @@ async function winRun() {
   ok(inView(s) && facing(s) > 0.8, 'lock-on frames both fighters', `boss ndc ${s.bossScreen.x},${s.bossScreen.y} player ndc ${s.playerScreen.x},${s.playerScreen.y}`);
   await page.keyboard.down('KeyD');
   let worst = 1;
-  for (let i = 0; i < 12; i++) { await sleep(90); s = await snap(); if (s.mode === 'fight') worst = Math.min(worst, facing(s)); }
+  const fr = [];
+  for (let i = 0; i < 12; i++) { await sleep(90); s = await snap(); if (s.mode === 'fight') { worst = Math.min(worst, facing(s)); fr.push(s.framing); } }
   await page.keyboard.up('KeyD');
   await sleep(500); s = await snap();
   ok(worst > 0.6 && inView(s), 'lock-on keeps tracking while strafing', `min facing ${worst.toFixed(2)}`);
+  // duel pass: strafe the other way too (the direction in which the old camera let the Reedcutter cover the Warden)
+  await page.keyboard.down('KeyA');
+  for (let i = 0; i < 14; i++) { await sleep(90); s = await snap(); if (s.mode === 'fight') fr.push({ ...s.framing, d: s.dist, st: s.player.state + '/' + s.boss.state }); }
+  await page.keyboard.up('KeyA');
+  const offs = fr.filter((f) => !(f.playerChest.on && f.bossChest.on)).length, cov = fr.filter((f) => f.cover >= 0.34).length;
+  ok(fr.length >= 16 && offs === 0, 'both fighters\' upper bodies stay on screen while strafing locked on (both directions)', `${fr.length} samples, ${offs} with a chest off screen`);
+  ok(cov <= fr.length * 0.2, 'the Reedcutter does not cover the Warden\'s upper body while strafing locked on', `${cov}/${fr.length} samples covered` + (cov ? ': ' + fr.filter((f) => f.d).map((f) => `${f.d.toFixed(1)}m ${f.cover} ${f.st} cam${f.camDist}`).join(' | ') : ''));
+  await sleep(300);
   await page.keyboard.press('KeyQ');
   s = await snap();
   ok(s.camera.lock === false, 'Q releases lock-on (free look)');

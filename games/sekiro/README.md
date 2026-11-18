@@ -74,7 +74,21 @@ node tests/offline.mjs --only=controls|win|loss [--gpu]  # 单独运行某一轮
 node tests/compare-shots.mjs after --dir=controls [--extra]  # 本轮对比截图 → compare/controls/
 node tests/record-clip.mjs      # 录制 compare/controls/gameplay.webm、ambience.wav 并测量音频 → audio-measure.json
 node tests/measure-timing.mjs [--gl]  # 墙钟计时：帧率无关性 → compare/controls/timing-*.json
+node tests/duel-evidence.mjs before|after [--shots|--clip]  # 对决可读性一轮的截图与带声音的片段 → compare/duel/
+node tests/measure-occlusion.mjs before|after  # 凝视镜头遮挡测量（3/4/5 m 绕圈）→ compare/duel/occlusion-*.json
+node tests/measure-audio.mjs    # 刀剑接触音测量（延迟、峰值/RMS、频谱质心、削波）→ compare/duel/audio-measure.json
 ```
+
+凝视镜头 Lock-on camera：镜头在"泽守 → 割苇人"的方位上合成（平滑方位角 + 肩侧 / 后撤 / 高度偏移），绕圈时割苇人不再挡住泽守；
+两人的上身与刀保持同框。泽守的蓄势姿势更大：刀举在斗笠和披肩之外，肩随刀转，出刀前可看出从哪一侧来。
+The lock-on camera is composed in the duel's own frame (smoothed bearing plus eased shoulder / back / height offsets), so
+circling no longer puts the Reedcutter in front of the Warden. The Warden's wind-ups carry the blade clear of the hat and
+the short shoulder cape, with the shoulders turned, so the side of the coming cut can be read before it falls.
+
+刀剑接触音 Blade contact audio：挥空只有风声；普通架刀是短而低沉的钢响；拨锋是清亮的击打加短促余音；重击被架或踏锁时带一段
+刮擦；砍中身体是闷响，没有金属余音。全部在模拟判定事件发生时触发。A whiff is air only; a normal guard is a short, low steel
+clank; a Glance is a bright strike with a brief ring; a guarded heavy and the Bind-Step pin add a scrape; a hit on a body is
+a dull thud with no ring. Each is triggered by the simulation's own resolution event.
 
 音频 Audio：全部由 WebAudio 实时合成，无录音素材。环境声是开阔苇泽的夜：远处稀疏的细雨、随画面中同一阵风起伏的苇丛风声、
 零星落在草叶 / 泥地 / 积水上的雨滴（随机间隔、音色、方位，无循环），战斗提示音响起时环境声自动压低并收窄频带。
@@ -105,6 +119,7 @@ To play: double-click `dist/play.html` (works from `file://` with no network).
 | `gallery=player\|boss` | 开发用姿势陈列 dev pose gallery (`gy` 朝向 yaw, `gp` 页 page) |
 | `rec=1` | 仅取证用：暴露 `window.__rec` 录制钩子（画面 + 主输出音频 / PCM）evidence only: recording hook for the clip and audio measurements |
 | `legacyclamp=1` | 仅测量用：恢复旧的 50 ms 帧间隔钳制，用于前后计时对比 measurement only: the previous frame-delta clamp, for timing A/B |
+| `legacycam=1` | 仅测量用：恢复上一版凝视镜头，用于遮挡前后对比 measurement only: the previous lock-on camera, for the occlusion A/B |
 
 `window.__game.snap` 是只读状态探针（供测试观察，不可写入）。`window.__game.snap` is a read-only state probe for tests.
 

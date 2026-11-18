@@ -14,6 +14,13 @@
 // Combat cues duck and band-limit the ambience bus so they stay on top.
 const AMB_LEVEL = 2.0; // measured: ambience alone sits ~10 dB under the fight mix (see compare/controls/audio-measure.json)
 const DUCK = { deflect: 0.5, cue: 1.0, hitPlayer: 0.5, guard: 0.3, hitBoss: 0.3, heavyHit: 0.5, heavyBlock: 0.4, counter: 0.7, break: 0.8, finisherHit: 1.4, phase2: 1.6, chargeFull: 0.4, drinkStart: 0.7, heal: 0.8, deny: 0.4 };
+// Blade sounds: all of them get a voice of their own; the ones with ringing steel are capped at four at a time.
+const BLADE = new Set(['swing', 'bossSwing', 'heavySwing', 'guard', 'deflect', 'hitPlayer', 'hitBoss', 'heavyHit', 'bossBlock', 'heavyBlock', 'counter']);
+const STEEL = new Set(['guard', 'deflect', 'bossBlock', 'heavyBlock', 'counter']);
+// partials [frequency ratio, level, decay in s]: a clamped, heavy bar (short, low) and a free, thin edge (bright, rings)
+const STEEL_LOW = [[1, 0.34, 0.15], [1.47, 0.24, 0.12], [2.09, 0.18, 0.1], [2.83, 0.12, 0.075], [4.1, 0.07, 0.05], [5.9, 0.04, 0.035]];
+const STEEL_HIGH = [[1, 0.3, 0.56], [1.51, 0.2, 0.46], [2.24, 0.14, 0.34], [3.13, 0.09, 0.26], [4.4, 0.05, 0.17]];
+const PROBED = new Set(['swing', 'guard', 'deflect', 'hitPlayer', 'hitBoss', 'bossBlock', 'heavyBlock', 'counter']); // (the Warden's swish always coincides with a contact, so it carries no marker)
 
 export class Sound {
   constructor() { this.ctx = null; this.muted = false; this.paused = false; this.phase = 1; this.active = false; this.wind = 0; this.dropCount = 0; this.charge = null; this.pcm = null; }
@@ -23,8 +30,13 @@ export class Sound {
       const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return;
       const c = this.ctx = new AC();
       this.master = c.createGain(); this.master.gain.value = this.muted ? 0 : 0.7;
-      const comp = this.comp = c.createDynamicsCompressor(); this.master.connect(comp); comp.connect(c.destination);
-      this.meter = c.createAnalyser(); this.meter.fftSize = 2048; comp.connect(this.meter); this.meterBuf = new Float32Array(2048);
+      const comp = this.comp = c.createDynamicsCompressor(); this.master.connect(comp);
+      // output ceiling: linear up to 0.7, then a soft knee that tops out at 0.92 (-0.7 dBFS), so a
+      // pile-up of blade sounds can never reach full scale
+      const lim = this.out = c.createWaveShaper(), cv = new Float32Array(4097);
+      for (let i = 0; i < cv.length; i++) { const x = i / 2048 - 1, ax = Math.abs(x); cv[i] = Math.sign(x) * (ax <= 0.7 ? ax : 0.7 + 0.28 * Math.tanh((ax - 0.7) / 0.28)); }
+      lim.curve = cv; lim.oversample = '2x'; comp.connect(lim); lim.connect(c.destination);
+      this.meter = c.createAnalyser(); this.meter.fftSize = 2048; lim.connect(this.meter); this.meterBuf = new Float32Array(2048);
       this.sfx = c.createGain(); this.sfx.connect(this.master);
       this.mus = c.createGain(); this.mus.connect(this.master);
       // ambience bus: duck gain -> low-pass (band-limit under cues) -> level
@@ -96,14 +108,14 @@ export class Sound {
   tone(freq, t, dur, peak, type = 'sine', dest, glideTo) {
     const c = this.ctx, o = c.createOscillator(), g = c.createGain();
     o.type = type; o.frequency.setValueAtTime(freq, t); if (glideTo) o.frequency.exponentialRampToValueAtTime(glideTo, t + dur);
-    this.env(g, t, 0.004, peak, dur); o.connect(g); g.connect(dest || this.sfx); o.start(t); o.stop(t + dur + 0.05);
+    this.env(g, t, 0.004, peak, dur); o.connect(g); g.connect(dest || this.dst || this.sfx); o.start(t); o.stop(t + dur + 0.05);
     return g;
   }
   noise(t, dur, peak, type, freq, q = 1, glideTo, dest) {
     const c = this.ctx, s = c.createBufferSource(), f = c.createBiquadFilter(), g = c.createGain();
     s.buffer = this.noiseBuf; s.loop = true; f.type = type; f.frequency.setValueAtTime(freq, t); f.Q.value = q;
     if (glideTo) f.frequency.exponentialRampToValueAtTime(glideTo, t + dur);
-    this.env(g, t, 0.003, peak, dur); s.connect(f); f.connect(g); g.connect(dest || this.sfx); s.start(t, Math.random()); s.stop(t + dur + 0.05);
+    this.env(g, t, 0.003, peak, dur); s.connect(f); f.connect(g); g.connect(dest || this.dst || this.sfx); s.start(t, Math.random()); s.stop(t + dur + 0.05);
   }
   // one raindrop: where it falls (pan, distance) and what it hits are random
   drop(t) {
@@ -161,10 +173,54 @@ export class Sound {
     h.g.gain.cancelScheduledValues(t); h.g.gain.setTargetAtTime(0.0001, t, 0.03);
     for (const n of h.src) n.stop(t + 0.2);
   }
+  // ---------------------------------------------------------------- blade contact building blocks
+  // struck steel: a bank of inharmonic partials [ratio, level, decay s], each ringing out on its own
+  steel(t, base, parts, level = 1, dest) {
+    const c = this.ctx;
+    for (const [ratio, amp, dec] of parts) {
+      const o = c.createOscillator(), g = c.createGain();
+      o.frequency.value = base * ratio * (1 + (Math.random() - 0.5) * 0.014);
+      g.gain.setValueAtTime(amp * level, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dec);
+      o.connect(g); g.connect(dest || this.dst || this.sfx); o.start(t); o.stop(t + dec + 0.03);
+    }
+  }
+  // edge dragged along edge: narrow noise bands sliding down in pitch, roughened by a fast chatter
+  scrape(t, dur, level, f0, f1) {
+    const c = this.ctx, s = c.createBufferSource(), g = c.createGain(), am = c.createGain(), l = c.createOscillator(), lg = c.createGain();
+    s.buffer = this.noiseBuf; s.loop = true;
+    am.gain.value = 0.6; l.type = 'sawtooth'; l.frequency.setValueAtTime(110, t); l.frequency.exponentialRampToValueAtTime(52, t + dur); lg.gain.value = 0.4; l.connect(lg); lg.connect(am.gain);
+    for (const [m, q, k] of [[1, 8, 1], [1.62, 11, 0.6], [2.7, 7, 0.4]]) {
+      const f = c.createBiquadFilter(), fg = c.createGain(); f.type = 'bandpass'; f.Q.value = q; fg.gain.value = k;
+      f.frequency.setValueAtTime(f0 * m, t); f.frequency.exponentialRampToValueAtTime(f1 * m, t + dur);
+      s.connect(f); f.connect(fg); fg.connect(am);
+    }
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(level, t + 0.012); g.gain.setValueAtTime(level, t + dur * 0.5); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    am.connect(g); g.connect(this.dst || this.sfx); s.start(t, Math.random()); l.start(t); s.stop(t + dur + 0.05); l.stop(t + dur + 0.05);
+  }
+  // air only: band-passed noise with a slow swell and fall and no transient (a cut that meets nothing)
+  whoosh(t, dur, peak, f0, f1, q = 1.1) {
+    const c = this.ctx, s = c.createBufferSource(), f = c.createBiquadFilter(), g = c.createGain();
+    s.buffer = this.noiseBuf; s.loop = true; f.type = 'bandpass'; f.Q.value = q;
+    f.frequency.setValueAtTime(f0, t); f.frequency.exponentialRampToValueAtTime(f1, t + dur * 0.55); f.frequency.exponentialRampToValueAtTime(f0 * 1.2, t + dur);
+    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(peak, t + dur * 0.45); g.gain.linearRampToValueAtTime(0, t + dur);
+    s.connect(f); f.connect(g); g.connect(this.dst || this.sfx); s.start(t, Math.random()); s.stop(t + dur + 0.05);
+  }
   play(name, a) {
     const c = this.ctx; if (!c) return;
-    const t = c.currentTime + 0.005;
+    const t = c.currentTime + 0.003;
     if (DUCK[name]) this.duck(DUCK[name]);
+    // every call gets its own voice gain; ringing steel voices are capped so rapid exchanges do not pile up
+    const v = this.dst = c.createGain(); v.connect(this.sfx);
+    if (BLADE.has(name)) {
+      this.voices = (this.voices || []).filter((x) => x.end > t);
+      if (STEEL.has(name)) { const ring = this.voices.filter((x) => x.steel); if (ring.length >= 4) ring[0].v.gain.setTargetAtTime(0, t, 0.012), ring[0].end = 0; }
+      this.voices.push({ v, end: t + 0.9, steel: STEEL.has(name) });
+      if (this.probe && PROBED.has(name)) { // evidence only (#rec=1): a marker on the audio thread at the moment the event arrives
+        v.connect(this.probe.bus);
+        const m = c.createConstantSource(); m.offset.value = 1; m.connect(this.probe.mark); m.start(); m.stop(c.currentTime + 0.004);
+        this.probe.log.push({ name, ctx: c.currentTime, perf: performance.now() });
+      }
+    }
     switch (name) {
       case 'step': { // soft tread on wet ground with a brush of grass
         const k = a || 0.6;
@@ -183,32 +239,44 @@ export class Sound {
         this.charge = { g, src: [o, n] }; break;
       }
       case 'chargeFull': this.tone(987.77, t, 0.4, 0.16, 'triangle').connect(this.echo); this.tone(1479.98, t + 0.07, 0.45, 0.11, 'triangle').connect(this.echo); this.noise(t, 0.05, 0.08, 'highpass', 6000); break;
-      case 'heavySwing': this.noise(t, 0.3, 0.26, 'bandpass', 300, 1, 2300); this.tone(140, t, 0.22, 0.1, 'sawtooth', null, 70); break;
-      case 'heavyHit': this.noise(t, 0.18, 0.42, 'bandpass', 1400, 0.7); this.tone(130, t, 0.22, 0.34, 'square', null, 55); this.tone(62, t, 0.32, 0.42, 'sine'); break;
-      case 'heavyBlock': this.tone(520, t, 0.16, 0.18, 'square'); this.tone(392, t, 0.3, 0.12, 'triangle').connect(this.echo); this.noise(t, 0.12, 0.26, 'highpass', 2200); this.tone(90, t, 0.2, 0.3, 'sine', null, 50); break;
+      // ---- blade sounds. Air: whoosh only. Steel on steel: struck partials (+ scrape where edges slide).
+      // Body: a dull thud and cloth, no ringing partials at all.
+      case 'heavySwing': this.whoosh(t, 0.34, 0.5, 260, 1500, 0.9); this.whoosh(t + 0.02, 0.26, 0.16, 900, 3200, 1.4); break;
+      case 'heavyHit': // Reaping Cut into the body
+        this.tone(120, t, 0.24, 0.6, 'sine', null, 46); this.noise(t, 0.09, 0.5, 'lowpass', 620, 0.8); this.noise(t + 0.004, 0.08, 0.2, 'bandpass', 2300, 0.7); this.tone(58, t, 0.3, 0.4, 'sine'); break;
+      case 'heavyBlock': // Reaping Cut beaten onto the Warden's guard: heavy clank, then the edges grind
+        this.steel(t, 300, STEEL_LOW, 1.1); this.tone(96, t, 0.16, 0.4, 'sine', null, 52); this.noise(t, 0.035, 0.36, 'bandpass', 1100, 0.8);
+        this.scrape(t + 0.03, 0.26, 1.5, 3000, 1300); break;
       case 'drinkStart': // cork, then three swallows
         this.tone(520, t, 0.035, 0.2, 'sine', null, 930); this.noise(t, 0.02, 0.1, 'bandpass', 1800, 2);
         for (let k = 0; k < 3; k++) { const u = t + 0.2 + k * 0.15; this.tone(196, u, 0.09, 0.17, 'sine', null, 118); this.tone(640, u + 0.02, 0.05, 0.05, 'sine', null, 380); }
         break;
       case 'heal': [392, 493.88, 587.33, 783.99].forEach((f, i) => this.tone(f, t + i * 0.07, 0.7, 0.09, 'sine').connect(this.echo)); this.noise(t, 0.4, 0.03, 'highpass', 6000); break;
       case 'deny': this.tone(196, t, 0.07, 0.15, 'square'); this.tone(174.61, t + 0.11, 0.09, 0.15, 'square'); this.noise(t, 0.05, 0.16, 'lowpass', 300); break;
-      case 'swing': this.noise(t, 0.16, 0.12, 'bandpass', 900, 1.2, 2600); break;
-      case 'bossSwing': this.noise(t, 0.22, 0.16, 'bandpass', 500, 1, 1800); break;
-      case 'hitBoss': this.noise(t, 0.12, 0.3, 'bandpass', 1800, 0.8); this.tone(180, t, 0.12, 0.25, 'square', null, 80); break;
-      case 'bossBlock': this.tone(620, t, 0.12, 0.14, 'square'); this.noise(t, 0.08, 0.18, 'highpass', 2500); break;
-      case 'guard': this.tone(240, t, 0.16, 0.3, 'square', null, 150); this.noise(t, 0.14, 0.3, 'bandpass', 1300, 0.7); break;
-      case 'deflect': { // bright bell, pitch climbs with the chain
-        const f = 1568 * Math.pow(1.122, Math.min(5, (a || 1) - 1));
-        for (const [m, p] of [[1, 0.3], [2.76, 0.16], [5.4, 0.08]]) this.tone(f * m, t, 0.5, p, 'sine').connect(this.echo);
-        this.noise(t, 0.04, 0.25, 'highpass', 5000); break;
+      case 'swing': this.whoosh(t, 0.2, 0.3, 620, 2500, 1.2); break; // the Reedcutter's cut through air
+      case 'bossSwing': this.whoosh(t, 0.26, 0.36, 380, 1700, 1); break; // the Warden's longer blade
+      case 'hitBoss': // a cut that lands on the Warden's body
+        this.tone(165, t, 0.13, 0.42, 'sine', null, 70); this.noise(t, 0.06, 0.4, 'lowpass', 800, 0.8); this.noise(t + 0.004, 0.07, 0.18, 'bandpass', 2600, 0.7); break;
+      case 'bossBlock': // the Warden's guard stops a light cut: a short mid clank
+        this.steel(t, 470, STEEL_LOW, 0.7); this.noise(t, 0.03, 0.3, 'bandpass', 1500, 0.8); break;
+      case 'guard': // normal guard: short, low, heavy steel with a body thump; a guarded heavy also grinds down the blade
+        this.steel(t, 400, STEEL_LOW, a ? 1.3 : 1.2); this.tone(110, t, 0.12, 0.3, 'sine', null, 58); this.noise(t, 0.04, 0.45, 'bandpass', 1350, 0.8); this.noise(t, 0.05, 0.14, 'lowpass', 320);
+        if (a) this.scrape(t + 0.035, 0.24, 1.5, 2600, 1200);
+        break;
+      case 'deflect': { // Glance: a clean, bright strike with a brief ring; the pitch steps up a little along a chain
+        const f = 2250 * Math.pow(1.06, Math.min(5, (a || 1) - 1));
+        this.steel(t, f, STEEL_HIGH, 1); this.steel(t, f, [[1, 0.1, 0.5], [1.51, 0.06, 0.4]], 1, this.echo);
+        this.noise(t, 0.012, 0.5, 'highpass', 6500); this.noise(t, 0.02, 0.16, 'bandpass', 3400, 1.5); break;
       }
-      case 'hitPlayer': this.tone(110, t, 0.3, 0.5, 'sawtooth', null, 50); this.noise(t, 0.2, 0.35, 'lowpass', 900); break;
+      case 'hitPlayer': // a blow that lands on the Reedcutter: thud, breath of cloth, nothing metallic
+        this.tone(98, t, 0.24, 0.7, 'sine', null, 44); this.noise(t, 0.1, 0.55, 'lowpass', 560, 0.8); this.noise(t + 0.005, 0.09, 0.2, 'bandpass', 2100, 0.6);
+        if (a) this.tone(52, t, 0.3, 0.4, 'sine'); break;
       case 'cue': // warning: two falling reed-pipe wails over a rising hiss
         for (const k of [0, 0.16]) { this.tone(1244, t + k, 0.14, 0.2, 'sawtooth', null, 830); this.tone(1865, t + k, 0.14, 0.1, 'square', null, 1244); }
         this.noise(t, 0.5, 0.1, 'bandpass', 800, 3, 5000); break;
-      case 'counter': // stomp + blade scraped down into the earth
+      case 'counter': // Bind-Step: stomp, blade clapped onto blade, then a long scrape as it is forced down into the earth
         this.tone(70, t, 0.4, 0.8, 'sine', null, 32); this.noise(t, 0.06, 0.5, 'lowpass', 400);
-        this.noise(t + 0.05, 0.45, 0.3, 'bandpass', 5200, 6, 900); this.tone(392, t + 0.08, 0.5, 0.12, 'triangle').connect(this.echo); break;
+        this.steel(t, 610, STEEL_LOW, 0.7); this.scrape(t + 0.04, 0.46, 1.9, 4400, 950); this.tone(392, t + 0.08, 0.5, 0.1, 'triangle').connect(this.echo); break;
       case 'break': this.tone(196, t, 1.2, 0.3, 'triangle').connect(this.echo); this.tone(98, t, 1.0, 0.4, 'sine'); this.noise(t, 0.5, 0.3, 'bandpass', 2400, 0.5, 300); break;
       case 'finisherStart': this.noise(t, 0.9, 0.2, 'bandpass', 300, 2, 3600); this.tone(110, t, 0.9, 0.2, 'sawtooth', null, 440); break;
       case 'finisherHit': // gong and rising shimmer
@@ -226,13 +294,31 @@ export class Sound {
 
   // ---------------------------------------------------------------- recording hooks (used only with #rec=1)
   // audio track of the final output for MediaRecorder
-  tapStream() { if (!this.ctx) return null; if (!this.tap) { this.tap = this.ctx.createMediaStreamDestination(); this.comp.connect(this.tap); } return this.tap.stream; }
-  // raw PCM capture: 'mix' = final output after the compressor; 'amb' = the ambience bus alone,
-  // scaled by the master gain (0.7) so its numbers are comparable with the mix
+  tapStream() { if (!this.ctx) return null; if (!this.tap) { this.tap = this.ctx.createMediaStreamDestination(); this.out.connect(this.tap); } return this.tap.stream; }
+  // One sound rendered alone in an OfflineAudioContext (the sfx bus signal, before the master gain
+  // 0.7, the compressor and the ceiling). Returns mono Float32 samples at 48 kHz; the sound is
+  // scheduled 3 ms after time zero, exactly as play() schedules it after an event.
+  static async render(name, a, secs = 1.3) {
+    const off = new OfflineAudioContext(1, Math.floor(48000 * secs), 48000), s = new Sound();
+    s.ctx = off; s.sfx = off.createGain(); s.sfx.connect(off.destination); s.echo = off.createGain(); s.duck = () => {};
+    s.noiseBuf = off.createBuffer(1, 96000, 48000); const ch = s.noiseBuf.getChannelData(0); for (let i = 0; i < ch.length; i++) ch[i] = Math.random() * 2 - 1;
+    s.play(name, a);
+    return (await off.startRendering()).getChannelData(0);
+  }
+  // raw PCM capture: 'mix' = final output after the compressor and ceiling; 'pre' = the master bus
+  // before them; 'amb' = the ambience bus alone, scaled by the master gain (0.7) so its numbers are
+  // comparable with the mix; 'lat' = blade sounds only (left) against the event markers (right)
   startPcm(bus = 'mix') {
     const c = this.ctx; if (!c) return false;
     const sp = c.createScriptProcessor(4096, 2, 2), sink = c.createGain(); sink.gain.value = 0;
-    const k = bus === 'amb' ? 0.7 : 1, rec = this.pcm = { sp, sink, src: bus === 'amb' ? this.ambOut : this.comp, L: [], R: [], n: 0, peak: 0, sq: 0, clipped: 0, k, bus, win: [] };
+    let src = bus === 'amb' ? this.ambOut : bus === 'pre' ? this.master : this.out;
+    if (bus === 'lat') {
+      const mg = c.createChannelMerger(2), pb = c.createGain(), mk = c.createGain();
+      pb.channelCount = 1; pb.channelCountMode = 'explicit'; pb.connect(mg, 0, 0); mk.connect(mg, 0, 1);
+      this.probe = { bus: pb, mark: mk, log: [] }; src = mg;
+    }
+    this.pcms = this.pcms || {};
+    const k = bus === 'amb' ? 0.7 : 1, rec = this.pcms[bus] = { sp, sink, src, L: [], R: [], n: 0, peak: 0, sq: 0, clipped: 0, k, bus, win: [] };
     sp.onaudioprocess = (e) => {
       const l = e.inputBuffer.getChannelData(0), r = e.inputBuffer.getChannelData(1), L = new Float32Array(l.length), Rr = new Float32Array(r.length);
       let wsq = 0;
@@ -247,10 +333,31 @@ export class Sound {
     return true;
   }
   // returns measured numbers and (optionally) a 16-bit stereo WAV at half the context rate, base64
-  stopPcm(wantWav = false) {
-    const rec = this.pcm; if (!rec) return null; this.pcm = null;
+  stopPcm(wantWav = false, bus) {
+    const all = this.pcms || {}; bus = bus || Object.keys(all)[0];
+    const rec = all[bus]; if (!rec) return null; delete all[bus];
     rec.src.disconnect(rec.sp); rec.sp.disconnect(); rec.sp.onaudioprocess = null;
     const rate = this.ctx.sampleRate, db = (v) => (v > 0 ? +(20 * Math.log10(v)).toFixed(1) : -Infinity);
+    if (bus === 'lat') {
+      // each marker (right channel) is the audio-thread arrival of one blade event; the onset is the
+      // first later sample of the blade bus (left) that rises clear of what was already sounding
+      const log = this.probe.log; this.probe = null;
+      const n = rec.n, L = new Float32Array(n), R = new Float32Array(n); let o = 0;
+      for (let i = 0; i < rec.L.length; i++) { L.set(rec.L[i], o); R.set(rec.R[i], o); o += rec.L[i].length; }
+      const hits = [], pre = Math.floor(rate * 0.004), span = Math.floor(rate * 0.08);
+      for (let i = 1; i < n; i++) if (R[i] > 0.5 && R[i - 1] <= 0.5) {
+        let floor = 0; for (let j = Math.max(0, i - pre); j < i; j++) floor = Math.max(floor, Math.abs(L[j]));
+        const thr = Math.max(0.004, floor * 1.8); let on = -1;
+        for (let j = i; j < Math.min(n, i + span); j++) if (Math.abs(L[j]) > thr) { on = j; break; }
+        hits.push({ at: i, ms: on < 0 ? null : +((on - i) / rate * 1000).toFixed(2) });
+        i += pre;
+      }
+      // name each marker from the event log by context time (the first marker is the first logged event)
+      const paired = hits.length > 0 && log.length > 0;
+      const nameOf = (h) => log.filter((e) => Math.abs((e.ctx - log[0].ctx) - (h.at - hits[0].at) / rate) < 0.006).map((e) => e.name).join('+') || '?';
+      return { bus, seconds: +(n / rate).toFixed(2), rate, events: log.length, markers: hits.length, paired, baseLatencyMs: +((this.ctx.baseLatency || 0) * 1000).toFixed(1), outputLatencyMs: +((this.ctx.outputLatency || 0) * 1000).toFixed(1),
+        onsets: hits.map((h) => ({ name: paired ? nameOf(h) : '?', ms: h.ms })) };
+    }
     const win = rec.win.slice().sort((a, b) => a - b), q = (f) => win.length ? win[Math.min(win.length - 1, Math.floor(f * win.length))] : 0;
     const out = { bus: rec.bus, seconds: +(rec.n / rate).toFixed(2), rate, samples: rec.n, peak: +rec.peak.toFixed(4), peakDb: db(rec.peak), rms: +Math.sqrt(rec.sq / (2 * rec.n || 1)).toFixed(5), rmsDb: db(Math.sqrt(rec.sq / (2 * rec.n || 1))), clipped: rec.clipped,
       windowMs: Math.round(4096 / rate * 1000), winRmsDb: { min: db(q(0)), p10: db(q(0.1)), p50: db(q(0.5)), p90: db(q(0.9)), max: db(q(0.999)) } };

@@ -6,7 +6,10 @@ Date: 2026-11-17 · Deliverable: `dist/play.html` (single self-contained file, 8
 > pass changed something, the **Realism pass** section is the record for that pass (look,
 > frame-delta clamp, quality scaling, test results, known issues).
 >
-> **Current state: see "Controls, motion and audio pass" at the end.** It supersedes the controls
+> **Latest pass: "Duel readability, characters and steel audio pass" at the very end** (lock-on
+> camera, Warden wind-ups and silhouette, materials, blade contact audio, current test results).
+>
+> **Controls and numbers: see "Controls, motion and audio pass".** It supersedes the controls
 > table below (Step moved to Left Shift, Space is jump, R is the flask, retry is Enter only), the
 > frame-delta clamp, the camera, the rigid-segment bodies and the audio bed described earlier.
 
@@ -621,3 +624,237 @@ code; the only bundled third-party code is still three.js (MIT, notice kept in `
 - `timing-*.json` were measured one build before the final one; the only later change is the
   close-range camera offset (no simulation or loop change).
 - Hardware WebGL 2, Firefox and Safari were not run.
+
+## Duel readability, characters and steel audio pass (2026-11-17)
+
+Upgrade brief `tasks/sekiro.duel.md`. Worked on the existing code. Combat rules, attack windows and
+timings, controls, URL hash options, the `window.__game` probe and the single-file offline HTML are
+kept; the renderer is still Three.js `WebGPURenderer` with the WebGL 2 fallback. Field, reeds and
+ground were not touched. Deliverable: `dist/play.html`, 937.86 kB (265.6 kB gzipped; was 929.05 kB).
+The only edit in `src/sim.js` is one data field: the `guard` event now carries `heavy` (true when
+the guarded blow was a heavy), used to pick the sound. No window, timing or damage value changed;
+`npm run test:sim` passes unchanged.
+
+**Nobody played this build and nobody listened to it.** Everything below about the picture comes
+from screenshots and clip frames I looked at, and everything about sound from measurements.
+
+### A. Lock-on camera and wind-up readability
+
+Cause of "the Reedcutter covers the Warden": the old camera chased a world-space point with an
+exponential lag. While the Reedcutter circled toward the lens side (strafe left, `A`), that point
+moved at about twice the run speed and the lens trailed it by roughly a metre, which cancelled most
+of the 1.7 m shoulder offset and put the Reedcutter on the sight line.
+
+New camera (`src/main.js`, `updateCamera`): the lens is composed in the duel's own frame — a
+smoothed bearing Warden → Reedcutter (turn rate capped at 6 rad/s), a lightly smoothed anchor on
+the Reedcutter, and eased back / side / height offsets (3.0 + 0.22 d back, 1.8–2.5 m to the side,
+1.7 + 0.06 d high, a little wider and higher below about 3 m). The part of the shoulder offset that
+anchor lag and bearing lag would eat while circling is measured each frame and added back (eased).
+The side never flips. Entering lock-on (after the intro, from free look, after a finisher view)
+eases in. Lens travel is capped at 26 m/s per frame time while locked on in the fight. The old
+camera is kept behind `#legacycam=1` for the measurement only.
+
+Measurement (`node tests/measure-occlusion.mjs before|after`, real keys, hardware WebGPU, 1280×720,
+`#seed=3&hurt=0.02&mute=1`; `before` = the same final build with `#legacycam=1`). The script strafes
+one full circle around the Warden in each direction while steering toward 3, 4 and 5 m with `W`/`S`,
+and samples the new read-only probe value `snap.framing` on every poll. `framing` projects both
+chests, the Warden's right hand and both blade tips to the screen and tests a 3 × 4 grid over the
+Warden's upper body (0.48 m wide, 1.2–1.95 m high) against the Reedcutter's body axis (0.27 m
+radius). "Covered" = at least 4 of the 12 grid points hidden. The occluder is the body axis only:
+the Reedcutter's sword, arms and cloth are not counted.
+
+| Target distance, direction | Mean distance actually held | Covered, before | Covered, after | Any grid point hidden, before → after |
+| --- | --- | --- | --- | --- |
+| 3 m, strafe left (`A`) | 3.4 / 3.3 m | 44.4 % | 0 % | 77.2 % → 4.0 % |
+| 3 m, strafe right (`D`) | 2.7 / 2.7 m | 0 % | 0 % | 0 % → 0 % |
+| 4 m, strafe left | 3.3 / 3.2 m | 19.0 % | 0 % | 76.2 % → 1.9 % |
+| 4 m, strafe right | 3.8 / 3.8 m | 0 % | 0 % | 0 % → 0 % |
+| 5 m, strafe left | 4.6 / 4.4 m | 0 % | 0 % | 7.8 % → 0 % |
+| 5 m, strafe right | 4.7 / 4.7 m | 0 % | 0 % | 0 % → 0 % |
+| **All samples** (2253 before, 2251 after) | | **7.6 %** | **0 %** | 20.7 % → 0.7 % |
+
+In both runs the Warden's chest, right hand and blade tip and the Reedcutter's chest were on screen
+in 100 % of samples. Raw files: `compare/duel/occlusion-before.json`, `occlusion-after.json`.
+Limits of this measurement: the Warden keeps closing in and attacking, so the distances are means,
+not held values (57–97 % of samples within 0.6 m of the target; the "4 m, left" rows sit at 3.2–3.3 m);
+one seed; numbers move by a few points between runs (three earlier runs of the new camera during
+tuning gave 0 %, 0.4 % and 0.5 % overall).
+
+Continuity: the same script reports the highest lens speed over ≥ 15 ms spans. Old camera 12–55 m/s
+per circle, new camera 12–56 m/s. So the new camera is **not** calmer in its fastest moments (the
+Warden lunging or leaping past, the Bind-Step relocation); it follows those with a fast swing, as
+before. A tighter cap (14 m/s) was tried and rejected because the offline suite then caught the
+Reedcutter drifting in front of the Warden when circling at 2 m. Not separately checked: the lens
+at the reed boundary (the existing clamp and lying-down reeds are unchanged) and a frame-by-frame
+look at a cross-over.
+
+Readability of the Warden (presentation only, `src/figure.js`):
+
+- Wind-up poses are Warden-specific now: for a right-to-left cut the long blade is carried out and
+  up on its right with the shoulders turned; mirrored for left-to-right; for the heavy it stands
+  upright beside the hat (amber tell on a tall vertical line); for the lunge it is drawn back level
+  along the right hip, point toward the Reedcutter (violet tell). All clear the hat brim and cape.
+  The pose blend rates and all hit times are unchanged.
+- Silhouette: the two-layer thatch dome is now a short shoulder cape that ends above the elbows and
+  is parted at the front, so both arms, the hands and the hilt are outside it.
+- Light and material: character materials gained a thin cool edge that follows the lens (on top of
+  the existing moon-side rim); the Warden's darker cloth gets 1.7× the existing lift; its bracers
+  and skin are a step lighter. Blades are a new steel material: tight highlight where the blade
+  mirrors the moon, pale sheen at grazing angles, the existing blade tells on top. Scene lighting,
+  fog and exposure are unchanged, so the field is as dark as before; only the fighters were lifted.
+
+### B. Characters
+
+- Reedcutter: the scabbard was a flat box that read as a pale plank across the back; it is a slim
+  lacquered tube now. Collar bands are rounded instead of boxes. Hands are about 15 % smaller
+  (rounded back of the hand, finger ring, thumb); bracers slightly slimmer.
+- Cloth, straw and leather use their grain canvas as a bump map as well (weave, a few soft
+  lengthwise folds, pores), roughness 0.94 for cloth; leather 0.6 and lacquer 0.38 keep a soft
+  highlight; steel is roughness 0.18 / metalness 0.9 with the moon glint.
+- Skeleton, skinning, IK and proportions (7.5 heads; Warden 1.15×) are as delivered in the previous
+  pass. The hands still reach the hilt by IK and the finger ring sits around the hilt axis.
+
+What I checked by eye, in `after-character-lock.png`, `after-character-close.png`,
+`review/after-windup-*.png` and the clip frames: stance, guard, the Warden's raised blade and
+lunge wind-up, both hands on the hilt in those frames, and that the two silhouettes differ (wide
+hat, cape and long skirt against bare head, short skirt and scabbard). **Not checked:** run and
+turn deformation in close-up, and the hilt against the hand through the frames of a cut — the brief
+asks for both; I have no frame-by-frame capture of a cut at close range.
+
+### C. Blade contact audio (`src/audio.js`, synthesised)
+
+Each sound is started by the event the simulation emits when it resolves that contact
+(`guard`, `deflect`, `hitPlayer`, `hitBoss`, `bossBlock`, `counter`; the swish comes from `swing` /
+`bossSwing`), in the same JS task as the 60 Hz step, scheduled 3 ms ahead.
+
+| Situation | Sound |
+| --- | --- |
+| Cut through air (either fighter) | band-passed noise that swells and falls, no transient, no tone |
+| Normal guard | six struck partials from 400 Hz decaying in 35–150 ms, a low thump, a short noise burst |
+| Glance | five partials from 2.25 kHz ringing 170–560 ms, a 12 ms high click; pitch +6 % per chain step |
+| Guarded heavy · Reaping Cut on the Warden's guard · Bind-Step pin | the clank, then a 0.24–0.46 s scrape (three narrow noise bands sliding down, roughened by a 110→52 Hz chatter) |
+| Blow landing on a body (either fighter) | sine thud, low-passed noise, a little cloth noise; no ringing partials |
+
+A whiff is the swish alone. A blow that connects plays the swish and the contact sound together
+(the Warden's swish is emitted at the moment of the strike). Ringing steel voices are limited to
+four at a time (the oldest is faded in about 12 ms). After the existing compressor there is now a
+soft ceiling (linear to 0.7, topping out at 0.92). The ambience is ducked by these sounds as before.
+
+Measured with `node tests/measure-audio.mjs` → `compare/duel/audio-measure.json`.
+
+Each sound alone (rendered offline at 48 kHz: the sfx bus before master gain 0.7, compressor and
+ceiling):
+
+| Sound | Onset after event | Peak | RMS, first 250 ms | Spectral centroid | Energy above 2 kHz | Flatness (150 Hz–12 kHz) | Time to −30 dB |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Whiff, Reedcutter | 14.1 ms (soft swell, peak at 88 ms) | −17.2 dBFS | −31.6 dB | 3123 Hz | 63 % | 0.23 | 181 ms |
+| Whiff, Warden | 24.2 ms (peak at 122 ms) | −12.8 | −29.6 | 2461 Hz | 44 % | 0.19 | 225 ms |
+| Normal guard | 3.0 ms | −1.5 | −21.7 | 457 Hz | 0.8 % | 0.005 | 59 ms |
+| Guarded heavy | 3.0 ms | −1.0 | −19.0 | 1669 Hz | 31 % | 0.13 | 172 ms |
+| Glance (first) | 3.0 ms | 0.0 | −19.9 | 3247 Hz | 99.5 % | 0.02 | 184 ms |
+| Glance (third in a chain) | 3.0 ms | −0.6 | −19.8 | 3651 Hz | 99.7 % | 0.02 | 189 ms |
+| Hit on the Reedcutter | 6.2 ms | −4.1 | −18.7 | 112 Hz | 0.4 % | 0.09 | 95 ms |
+| Cut landing on the Warden | 5.3 ms | −7.0 | −25.2 | 228 Hz | 1.2 % | 0.016 | 54 ms |
+| Warden guards a light cut | 3.0 ms | −6.3 | −27.3 | 641 Hz | 1.4 % | 0.008 | 55 ms |
+| Reaping Cut on the Warden's guard | 3.0 ms | −1.4 | −19.0 | 1834 Hz | 35 % | 0.20 | 190 ms |
+| Bind-Step pin | 3.0 ms | −1.3 | −13.4 | 2119 Hz | 37 % | 0.41 | 329 ms |
+
+So by these numbers guard (457 Hz, 59 ms), Glance (3.2–3.7 kHz, about 185 ms), body hit (112–228 Hz)
+and whiff (noise-like, 20–40 dB quieter in its first 250 ms, no transient) are separated. Weak
+points the numbers show: "cut landing on the Warden" has low flatness (it is dominated by its sine
+thud) and "normal guard" has almost nothing above 2 kHz, so whether it reads as *steel* rather than
+a dull knock is for the ear to judge.
+
+In play (about 30 s of real-input fighting on hardware WebGPU: 25 cuts, 2 guards, 6 Glances with a
+chain of 3, 8 blows taken, 15 cuts landed, 8 blocked):
+
+- Event → sound: a marker is started on the audio thread in the same call that starts the sound,
+  and the sound's first sample is found on a blade-only bus. Glance 3.0 ms (6 events), guard 3.0 ms
+  (2), Warden's guard 0.4–3.0 ms (8), hit on the Reedcutter 4.4–5.4 ms (8), cut on the Warden
+  3.6–6.7 ms (14), air swish 3.0–11.0 ms, median 8.6 ms (25, onset not found for 3 quiet ones).
+  This is scheduling delay plus attack time. It does not include the audio device's output latency
+  (the context reported 10 ms base and 40 ms output latency in this headless browser) or the up to 16.7 ms between a contact in
+  continuous time and the 60 Hz step that resolves it.
+- Level: final output peak −1.8 dBFS, RMS −23.8 dBFS, **0 clipped samples** (≥ 0.999) in 30 s; the
+  master bus before the compressor and ceiling peaked at −0.4 dBFS, so the ceiling was working.
+- These audio numbers were taken on the build before the final one; the only later change was
+  three camera constants in `src/main.js` (`src/audio.js` unchanged).
+
+### D. Test results (actual, this session, final build unless noted)
+
+`npm ci` → exit 0 (20 packages). `npm run build` → exit 0 (937.86 kB). `npm run install:browsers`
+→ exit 0. `npm run test:offline` → exit 0, **PASSED 96 checks, 0 page errors** (94 earlier checks
+unchanged + 2 new). `npm run test:sim` → "sim tests passed" (code-level, not real input; run before
+the last camera-constant changes, which do not touch the simulation).
+
+New real-input checks in the win run: while strafing locked on in both directions (26 samples)
+both fighters' chests stay on screen, and at most 20 % of samples may have the Warden's upper body
+covered (0 of 26 on the final build). No existing lock-on assertion had to be changed. This check
+caught two real regressions while I tuned the camera (cover at 2 m before the bearing compensation;
+again with the 14 m/s cap).
+
+**Environment problem that affects what "software rendering" means here.** Part-way through this
+session the bundled Playwright headless shell stopped giving any WebGL 2 context on this machine,
+even on a blank page (`node tests/gl-probe.mjs` → "no webgl2 context", also with
+`--use-angle=swiftshader` and `--disable-gpu`); the earlier passes ran their software WebGL 2 suite
+in that browser. I could not find the cause (I cannot list or stop processes in this session; two
+of my own runs were cut off by a `Select-Object -First` pipe and may have left browsers behind).
+So that `test:offline` does not depend on it, `tests/offline.mjs` and `tests/run-online-check.mjs`
+now probe for WebGL 2 first and, if there is none, use the bundled **full** Chromium (installed by
+the same `playwright install chromium`) with the game's WebGL 2 backend forced by `#gl=1`. On this
+machine that browser renders on the hardware GPU.
+
+| Path | What ran on the final build | Result |
+| --- | --- | --- |
+| WebGL 2, hardware (bundled full Chromium, new headless, `#gl=1`, `q=low`; page reported WebGL 2, 60–76 fps) | whole offline suite via `npm run test:offline` | PASSED 96 checks, 0 page errors |
+| WebGPU, hardware (installed Chrome, `node tests/offline.mjs --gpu`; page reported WebGPU) | whole offline suite | PASSED 96 checks, 0 page errors (one run on the final build; an earlier run on an intermediate build also passed, and two before that failed on the new cover check while the camera was being tuned) |
+| WebGPU, software adapter (installed Chrome, SwiftShader) | `tests/online-check.cjs` via `run-online-check.mjs --swgpu` | passed in 9.4 s, 9.4 fps, tier 4 (run on the build before the final one; only camera constants changed after) |
+| WebGPU, hardware | `tests/online-check.cjs` via `run-online-check.mjs --webgpu` | passed in 8.0 s (same earlier build) |
+| Default `run-online-check.mjs` (fell back to bundled full Chromium; page reported WebGPU, tier 0) | `tests/online-check.cjs` | passed in 10.1 s (same earlier build) |
+| **WebGL 2, software (SwiftShader)** | — | **not run in this pass**: no browser here would create that context. This is the path the launcher's published-page check used before. `tests/online-check.cjs` itself is unchanged |
+
+Debug state injection: none. `snap.framing` is a read-only addition to the probe. Evidence-only
+additions: `#legacycam=1`, and under the existing `#rec=1` hook `window.__rec.render` (one sound
+rendered offline) and the `lat` / `pre` capture buses.
+
+### Evidence (`compare/duel/`)
+
+All captured with `node tests/duel-evidence.mjs before|after` (1280×720, default quality, seed 3,
+real input, installed Chrome on hardware WebGPU); `before` was taken from the unchanged code first.
+
+- `before-title.png`, `before-explore.png`, `before-combat.png`, `before-character-lock.png`,
+  `before-character-close.png` → the same five `after-*.png`. The combat shot is the first blow of a
+  move 0.13–0.15 s before impact with guard held; in both sets that move is the lunge.
+  `character-close` is a 640×360 crop of the lock-on view at about 1.7 m, not a separate close-up camera.
+- `before.webm` (26.9 s, 5.7 MB) and `gameplay.webm` (23.6 s, 4.2 MB), VP9 + Opus with game audio,
+  same steps: a cut in the air, strafe left then right locked on, one Warden move taken without
+  guarding (wind-up → strike → direct hit), a held guard, two Glances, a second cut. Step times
+  and counters are in `before-clip.json` / `after-clip.json` (the two runs diverge in length
+  because the fight unfolds differently once the camera and the waits differ). Both audio tracks
+  decode with every 100 ms window above −60 dBFS (peak −5.1 dBFS before, −3.3 dBFS after).
+  **The fighters are closer than the 3–5 m the brief asks for through most of the clip**: the
+  Warden closes in during the strafe (about 6.5 m → 1 m), the unguarded move starts at 3.2 m, the
+  guard and Glances happen at 1.4–1.7 m. The clip shows the 3D canvas only (no DOM HUD).
+- `review/after-windup-slash.png`, `-windup-slash2.png`, `-windup-heavy.png` (wind-ups at
+  1.5–2.5 m), `review/*-clip-0…6.png` (frames read back out of the clips), `review/*-close-full.png`.
+- `occlusion-before.json`, `occlusion-after.json`, `audio-measure.json`.
+
+Looked at and changed from my own images: fold lines in the cloth bump read as pinstripes (fewer,
+softer folds, lower bump); the Reedcutter's edge light was too strong after the new lens-following
+edge (reduced for the Reedcutter).
+
+### Problems that remain / not verified
+
+- Not heard, not played. Whether the guard sounds like steel, whether the scrape is pleasant, and
+  whether the wind-ups are readable at fight speed are the owner's call.
+- Software WebGL 2 was not exercised in this pass (see the table). If the launcher's browser has
+  the same problem as this session's, its own online check is affected regardless of this build.
+- The picture as a whole is as dark as before; only the fighters and blades were lifted.
+- Fast lens swings when the Warden lunges or leaps past remain (measured peak speed unchanged).
+- The Warden's raised arms pass through the edge of the short cape in wind-ups; cloth is still
+  hinged panels; hands have no separate fingers; the Reedcutter still shows a light outline on the
+  moon side.
+- Run / turn deformation and the hand–hilt contact through a cut were not inspected frame by frame.
+- Phase-two wind-ups use the same new poses; I looked only at phase-one moves in screenshots.
+- `tests/gl-probe.mjs` is a small diagnostic left in the repository.
+- Firefox, Safari and other machines were not run.

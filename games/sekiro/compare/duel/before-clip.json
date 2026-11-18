@@ -1,0 +1,104 @@
+{
+  "file": "before.webm",
+  "bytes": 5706668,
+  "browser": "Chrome (channel) with WebGPU flags",
+  "backend": "WebGPU",
+  "recorder": {
+    "type": "video/webm;codecs=vp9,opus",
+    "audioTracks": 1,
+    "videoTracks": 1
+  },
+  "steps": [
+    {
+      "at": 0.08,
+      "what": "cut in the air (whiff)",
+      "dist": 8.96
+    },
+    {
+      "at": 0.8,
+      "what": "strafe left, locked on",
+      "dist": 6.38
+    },
+    {
+      "at": 3.42,
+      "what": "strafe right, locked on",
+      "dist": 1.45
+    },
+    {
+      "at": 11.22,
+      "what": "Warden wind-up (heavy), no guard",
+      "dist": 1.71
+    },
+    {
+      "at": 12.42,
+      "what": "direct hit taken",
+      "dist": 1.42
+    },
+    {
+      "at": 13.56,
+      "what": "guard held",
+      "dist": 1.5
+    },
+    {
+      "at": 19.07,
+      "what": "blow guarded",
+      "dist": 1.45
+    },
+    {
+      "at": 22.87,
+      "what": "Glance (1)",
+      "dist": 1.5
+    },
+    {
+      "at": 23.32,
+      "what": "Glance (2)",
+      "dist": 1.5
+    },
+    {
+      "at": 24.31,
+      "what": "cut (second swing)",
+      "dist": 4.59
+    }
+  ],
+  "stats": {
+    "swings": 2,
+    "hitsDealt": 0,
+    "blocked": 0,
+    "guards": 1,
+    "deflects": 2,
+    "maxChain": 2,
+    "counters": 0,
+    "breaks": 0,
+    "finishers": 0,
+    "hitsTaken": 8,
+    "evades": 0,
+    "dodges": 0,
+    "playerBreaks": 0,
+    "cues": 2,
+    "jumps": 0,
+    "lands": 0,
+    "heavies": 0,
+    "heavyHits": 0,
+    "chargeFulls": 0,
+    "chargeBreaks": 0,
+    "drinks": 0,
+    "drinkFails": 0,
+    "drinkBreaks": 0,
+    "healed": 0
+  },
+  "note": "Nobody listened to this clip in the capture session.",
+  "audio": {
+    "seconds": 26.88,
+    "channels": 2,
+    "rate": 48000,
+    "peakDb": -5.1,
+    "rmsDb": -28.4,
+    "windows100ms": 269,
+    "windowsAboveMinus60dB": 269
+  },
+  "video": {
+    "seconds": 26.95,
+    "width": 1280,
+    "height": 720
+  }
+}

@@ -17,8 +17,16 @@ const launch = args.includes('--webgpu')
   : args.includes('--swgpu')
     ? { channel: 'chrome', args: ['--enable-unsafe-webgpu', '--use-webgpu-adapter=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] }
     : { args: ['--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] };
-const browser = await chromium.launch(launch);
+let browser = await chromium.launch(launch);
+if (!args.includes('--webgpu') && !args.includes('--swgpu')) {
+  // the headless shell's software WebGL can be unavailable; fall back to the bundled full Chromium
+  const p = await browser.newPage(), has = await p.evaluate(() => !!document.createElement('canvas').getContext('webgl2')).catch(() => false);
+  await p.close();
+  if (!has) { await browser.close(); console.log('note: headless shell gave no WebGL 2 context; using the bundled full Chromium'); browser = await chromium.launch({ channel: 'chromium', args: launch.args }); }
+}
 const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+page.on('pageerror', (e) => console.error('PAGEERROR', e.message));
+page.on('console', (m) => { if (m.type() === 'error' || m.type() === 'warning') console.error('console', m.type(), m.text().slice(0, 300)); });
 const t0 = Date.now();
 try {
   await page.goto(url);

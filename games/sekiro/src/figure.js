@@ -2,7 +2,7 @@
 // set, two-bone IK for arms (both hands follow the hilt) and legs (feet plant in world space and
 // step), spring recoil, and simple cloth panels. Presentation only — the simulation is untouched.
 import * as THREE from 'three/webgpu';
-import { normalView, normalWorld, positionViewDirection, vec3, float, smoothstep } from 'three/tsl';
+import { normalView, normalWorld, positionViewDirection, vec3, float, smoothstep, materialEmissive, cameraPosition, positionWorld, reflect } from 'three/tsl';
 import { MOVES, C, CHARGE, FLASK } from './sim.js';
 import { MOON } from './world.js';
 
@@ -70,6 +70,17 @@ const BOSS_POSES = {
   idle: mk({ hip: [0, -0.05, 0], hipR: [0, 0.35, 0], chest: [0.06, -0.2, 0], sp: [-0.14, -0.2, 0.26], sd: [-0.3, -0.5, 0.8] }),
   kneel: mk({ ...POSES.kneel, sd: [-0.15, -0.55, 0.82], sp: [-0.14, -0.08, 0.36] }),
   guard: mk({ ...POSES.guard, sp: [-0.1, -0.02, 0.32], sd: [0.6, 0.62, 0.5] }),
+  // Wind-ups (presentation only; timings live in sim.js and are untouched): the long blade is carried
+  // well outside the hat and the shoulder cape and the shoulders turn with it, so the lock-on view
+  // shows that a blow is coming and from which side before it starts to fall.
+  //  windR  blade out and up on the Warden's right  -> cut travels right-to-left
+  //  windL  blade out and up on the Warden's left   -> cut travels left-to-right
+  //  windO  blade upright beside the hat, both hands at the right shoulder -> heavy overhead
+  //  windT  blade level, drawn back along the right hip, point at the Reedcutter -> lunge
+  windR: mk({ hip: [0, -0.07, -0.05], hipR: [0, -0.3, 0], chest: [-0.05, -0.75, 0.06], sp: [-0.36, 0.3, -0.02], sd: [-0.8, 0.55, -0.25], fL: [0.15, -0.24, 0], fR: [-0.13, 0.2, 0] }),
+  windL: mk({ hip: [0, -0.07, -0.05], hipR: [0, 0.4, 0], chest: [-0.05, 0.7, -0.06], sp: [0.3, 0.32, 0.06], sd: [0.8, 0.55, -0.25], fL: [0.15, -0.24, 0], fR: [-0.13, 0.2, 0] }),
+  windO: mk({ hip: [0, -0.02, -0.06], hipR: [-0.04, -0.15, 0], chest: [-0.14, -0.4, 0], sp: [-0.36, 0.5, 0.04], sd: [-0.1, 0.96, -0.25], fL: [0.16, -0.28, 0], fR: [-0.13, 0.2, 0] }),
+  windT: mk({ hip: [0, -0.24, -0.14], hipR: [0, -0.4, 0], chest: [0.2, -0.55, 0], sp: [-0.3, -0.05, -0.02], sd: [0.12, 0.03, 1], fL: [0.17, -0.42, 0], fR: [-0.13, 0.3, 0] }),
 };
 export const POSE_NAMES = Object.keys(POSES);
 
@@ -82,6 +93,12 @@ function grainTex(kind) {
   if (kind === 'cloth') {
     for (let i = 0; i < 128; i += 2) { g.globalAlpha = 0.1 + R() * 0.12; g.fillStyle = '#6a6a6a'; g.fillRect(i, 0, 1, 128); g.fillRect(0, i, 128, 1); }
     for (let i = 0; i < 900; i++) { g.globalAlpha = 0.08 + R() * 0.12; g.fillStyle = R() < 0.5 ? '#ffffff' : '#555'; g.fillRect(R() * 128, R() * 128, 1 + R() * 3, 1 + R() * 2); }
+    // soft lengthwise folds: darker creases with a lighter ridge beside them (read through the bump map)
+    for (let i = 0; i < 3; i++) {
+      const x = R() * 128, w = 7 + R() * 10, gr = g.createLinearGradient(x - w, 0, x + w, 0);
+      gr.addColorStop(0, 'rgba(60,60,60,0)'); gr.addColorStop(0.45, 'rgba(60,60,60,0.17)'); gr.addColorStop(0.62, 'rgba(255,255,255,0.1)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
+      g.globalAlpha = 1; g.fillStyle = gr; g.fillRect(x - w, 0, w * 2, 128);
+    }
   } else if (kind === 'straw') {
     for (let i = 0; i < 700; i++) { g.globalAlpha = 0.18 + R() * 0.3; g.fillStyle = R() < 0.45 ? '#ffffff' : '#4a4436'; g.fillRect(R() * 128, R() * 128, 1, 10 + R() * 40); }
   } else {
@@ -91,23 +108,36 @@ function grainTex(kind) {
   return t;
 }
 let TEX = null;
-function matFactory() {
+function matFactory(liftK = 1) {
   if (!TEX) TEX = { cloth: grainTex('cloth'), straw: grainTex('straw'), leather: grainTex('leather') };
   const moon = vec3(MOON.dir.x, MOON.dir.y, MOON.dir.z), mc = new THREE.Color(MOON.color);
-  // moon-side rim: grazing view angle on surfaces that turn toward the moon
-  const rim = (k) => {
-    const fres = float(1).sub(normalView.dot(positionViewDirection).clamp(0, 1)).pow(2.0);
-    return vec3(mc.r, mc.g, mc.b).mul(fres).mul(smoothstep(-0.55, 0.35, normalWorld.dot(moon))).mul(k);
+  // moon-side rim: grazing view angle on surfaces that turn toward the moon; plus a thinner cool
+  // edge that follows the lens, so shoulders, hands, hat and sleeves keep an outline from every side
+  const rim = (k, edge) => {
+    const fres = float(1).sub(normalView.dot(positionViewDirection).clamp(0, 1));
+    return vec3(mc.r, mc.g, mc.b).mul(fres.pow(2.0).mul(smoothstep(-0.55, 0.35, normalWorld.dot(moon))).mul(k).add(fres.pow(4.0).mul(edge)));
   };
-  return (color, o = {}) => {
-    const { tex, rimK = 1.25, ...rest } = o;
-    const m = new THREE.MeshStandardNodeMaterial({ color, roughness: 0.92, metalness: 0, map: tex ? TEX[tex] : null, ...rest });
-    // fighters sit a little above the field in value: a stronger moon rim plus a faint cool lift of
-    // their own colour (a per-character exposure nudge; the field's lighting is unchanged)
-    const cc = new THREE.Color(color), lift = vec3(cc.r * 0.6 + 0.02, cc.g * 0.62 + 0.025, cc.b * 0.68 + 0.035).mul(0.085);
-    m.emissiveNode = rimK > 0 ? rim(rimK * 1.5).add(lift) : lift;
+  // cloth, straw and leather: the grain canvas doubles as a bump map (weave, folds, pores), so the
+  // surfaces break up the light instead of shading like smooth plastic
+  const M = (color, o = {}) => {
+    const { tex, rimK = 1.25, bump = tex === 'leather' ? 0.6 : 1.1, ...rest } = o;
+    const m = new THREE.MeshStandardNodeMaterial({ color, roughness: 0.94, metalness: 0, map: tex ? TEX[tex] : null, bumpMap: tex ? TEX[tex] : null, bumpScale: bump, ...rest });
+    // fighters sit a little above the field in value: the rims plus a faint cool lift of their own
+    // colour (a per-character exposure nudge; the field's lighting is unchanged)
+    const cc = new THREE.Color(color), lift = vec3(cc.r * 0.6 + 0.02, cc.g * 0.62 + 0.025, cc.b * 0.68 + 0.035).mul(0.085 * liftK);
+    m.emissiveNode = rimK > 0 ? rim(rimK * (liftK > 1 ? 1.5 : 1.2), 0.3 * (liftK > 1 ? liftK : 0.5) * Math.min(1, rimK)).add(lift) : lift;
     return m;
   };
+  // polished steel: a tight highlight where the blade mirrors the moon, a broad pale sheen from the
+  // night sky at grazing angles, and the material's own emissive (blade tells) on top
+  M.steel = (color, glow) => {
+    const m = new THREE.MeshStandardNodeMaterial({ color, roughness: 0.18, metalness: 0.9, emissive: glow, emissiveIntensity: 0.3 });
+    const V = cameraPosition.sub(positionWorld).normalize(), R = reflect(V.negate(), normalWorld);
+    const glint = R.dot(moon).clamp(0, 1).pow(14.0).mul(2.4), sheen = float(1).sub(normalWorld.dot(V).abs()).pow(2.0).mul(0.3).add(0.14);
+    m.emissiveNode = materialEmissive.add(vec3(mc.r, mc.g, mc.b).mul(glint.add(sheen)));
+    return m;
+  };
+  return M;
 }
 // surface of revolution; pts are [radius, y] in ascending y
 const lathe = (pts, seg = 12) => new THREE.LatheGeometry(pts.map(([r, y]) => new THREE.Vector2(Math.max(r, 0.002), y)), seg);
@@ -193,7 +223,7 @@ export class Figure {
   constructor(style) {
     const S = style, boss = S.kind === 'boss';
     this.kind = S.kind; this.S = S.scale;
-    const M = matFactory();
+    const M = matFactory(boss ? 1.7 : 1); // the Warden wears darker cloth, so it gets a little more lift and edge
     // flat double-sided cloth gets a weaker rim so panels seen edge-on do not flare white
     const robe = M(S.robe, { tex: 'cloth' }), robeD = M(S.robe, { tex: 'cloth', side: THREE.DoubleSide, rimK: 0.3 }), under = M(S.under, { tex: 'cloth' });
     const trouser = M(S.trouser, { tex: 'cloth' }), sash = M(S.sash, { tex: 'cloth', roughness: 0.8 }), sashD = M(S.sash, { tex: 'cloth', side: THREE.DoubleSide, rimK: 0.3 });
@@ -212,9 +242,9 @@ export class Figure {
     // (the trunk, sleeves and legs are one skinned surface each; see "skin" below)
     // under-robe showing at the neck, and the overlapping collar bands of the outer garment
     add(chest, lathe([[0.075, 0.2], [0.07, 0.29], [0.058, 0.325]], 10), under, 0, 0, 0.012, 1, 1, 0.9);
-    const colGeo = new THREE.BoxGeometry(0.036, 0.3, 0.02);
-    const c1 = add(chest, colGeo, under, 0.04, 0.165, 0.108); c1.rotation.set(-0.16, 0, 0.46);
-    const c2 = add(chest, colGeo, M(S.collar, { tex: 'cloth' }), -0.034, 0.17, 0.116); c2.rotation.set(-0.16, 0, -0.42);
+    const colGeo = new THREE.CapsuleGeometry(0.016, 0.27, 3, 8);
+    const c1 = add(chest, colGeo, under, 0.04, 0.165, 0.106, 1.15, 1, 0.55); c1.rotation.set(-0.16, 0, 0.46);
+    const c2 = add(chest, colGeo, M(S.collar, { tex: 'cloth' }), -0.034, 0.17, 0.113, 1.15, 1, 0.55); c2.rotation.set(-0.16, 0, -0.42);
     // sash with a knot and two hanging ends
     add(pelvis, lathe([[0.146, 0.07], [0.156, 0.085], [0.156, 0.135], [0.146, 0.15]], 14), sash, 0, 0, 0, 1, 1, 0.76);
     add(pelvis, sph(0.034), sash, 0.075, 0.11, 0.115, 1.2, 0.9, 0.7);
@@ -237,8 +267,10 @@ export class Figure {
       // long robe skirt, split at the front
       for (const [th, w] of [[0.36, 0.25], [-0.36, 0.25], [1.2, 0.26], [-1.2, 0.26], [2.15, 0.26], [-2.15, 0.26], [Math.PI, 0.24]]) panel(pelvis, th, 0.15, 0.115, 0.08, w, 0.8, 0.75, robeD);
       // thatch mantle in two ragged layers over the shoulders
-      for (const [pts, sz] of [[[[0.42, -0.09], [0.38, 0.03], [0.3, 0.15]], 0.8], [[[0.35, 0.03], [0.31, 0.15], [0.2, 0.265], [0.085, 0.32]], 0.82]]) {
-        const g = lathe(pts, 22), p = g.attributes.position;
+      // (a short shoulder cape, parted at the front: it ends above the elbows, so the arms, hands
+      // and hilt stay outside it and the Warden no longer reads as a cone under a hat)
+      for (const [pts, sz] of [[[[0.325, 0.065], [0.305, 0.12], [0.26, 0.185]], 0.74], [[[0.285, 0.13], [0.255, 0.185], [0.17, 0.265], [0.085, 0.32]], 0.78]]) {
+        const g = new THREE.LatheGeometry(pts.map(([r, y]) => new THREE.Vector2(r, y)), 22, 0.4, Math.PI * 2 - 0.8), p = g.attributes.position;
         for (let i = 0; i < p.count; i++) if (p.getY(i) < pts[0][1] + 0.01) p.setY(i, p.getY(i) + Math.sin(i * 12.9898) * 0.035);
         g.computeVertexNormals();
         add(chest, g, strawD, 0, 0, -0.01, 1, 1, sz);
@@ -262,21 +294,24 @@ export class Figure {
       for (const dx of [-0.02, 0.022]) panel(head, Math.PI + dx * 8, 0.05, 0.1, 0.175, 0.026, 0.24 + dx, 0.2, M(S.sash, { tex: 'cloth', side: THREE.DoubleSide, rimK: 0.25 }), { on: 'head', k: 2.2, bow: 0, rest: 0.25 });
       panel(head, Math.PI, 0.02, 0.1, 0.225, 0.04, 0.17, -0.5, M(0x15130f, { roughness: 0.9, side: THREE.DoubleSide }), { on: 'head', k: 1.5, bow: 0.01, rest: 0.35 });
       // scabbard at the left hip
-      const sc = add(pelvis, new THREE.BoxGeometry(0.034, 0.05, 0.84), M(0x1b1512, { roughness: 0.45, tex: 'leather' }), 0.185, 0.07, -0.16); sc.rotation.set(-0.42, 0.22, 0);
+      // (a slim lacquered tube with a darker throat and tip, not a plank)
+      const sc = grp(pelvis, 0.185, 0.07, -0.16); sc.rotation.set(-0.42, 0.22, 0);
+      const lac = M(0x1b1512, { roughness: 0.38, tex: 'leather', rimK: 0.45 });
+      add(sc, lathe([[0.006, -0.39], [0.015, -0.37], [0.019, -0.2], [0.021, 0.3], [0.024, 0.31], [0.024, 0.36], [0.02, 0.37]], 8), lac, 0, 0, 0, 0.8, 1, 1.25).rotation.x = Math.PI / 2;
     }
     // sash ends hang from the knot
     for (const dx of [0, 0.03]) panel(pelvis, 0.6 + dx * 4, 0.16, 0.125, 0.1, 0.04, boss ? 0.42 : 0.3, 0.3, sashD, { k: 1.6, bow: 0 });
 
     // ---- limbs (flat hierarchy under the pivot; posed by IK every frame)
     const limb = () => grp(pv);
-    const armGeo = { bracer: lathe([[0.041, -D.foreArm + 0.015], [0.05, -0.15], [0.053, -0.06]], 10), fist: new THREE.TorusGeometry(0.027, 0.019, 6, 12) };
+    const armGeo = { bracer: lathe([[0.039, -D.foreArm + 0.015], [0.047, -0.15], [0.05, -0.06]], 10), fist: new THREE.TorusGeometry(0.0235, 0.0155, 6, 12) };
     const mkArm = () => {
       const up = limb(), fore = limb(), hand = limb();
       add(fore, armGeo.bracer, leather);
       // closed hand: the back of the hand, and the fingers curled into a ring around the hilt axis
-      add(hand, new THREE.BoxGeometry(0.066, 0.06, 0.034), skin, 0, -0.03, -0.004);
-      add(hand, armGeo.fist, skin, 0, -D.hand, 0.002, 1, 1, 1.9);
-      add(hand, sph(0.02), skin, 0.03, -D.hand + 0.012, 0.03); // thumb
+      add(hand, new THREE.CapsuleGeometry(0.016, 0.03, 3, 8), skin, 0, -0.032, -0.004, 1.75, 1, 0.95);
+      add(hand, armGeo.fist, skin, 0, -D.hand, 0.002, 1, 1, 1.8);
+      add(hand, sph(0.016), skin, 0.026, -D.hand + 0.012, 0.027, 1, 1, 1.3); // thumb
       return { up, fore, hand, sh: new THREE.Vector3(), el: new THREE.Vector3(), wr: new THREE.Vector3(), grip: new THREE.Vector3() };
     };
     this.armL = mkArm(); this.armR = mkArm();
@@ -335,7 +370,7 @@ export class Figure {
     // ---- sword: blade along +z, guard at the origin, edge toward -y
     const sw = this.sword = grp(pv);
     const L = S.blade;
-    this.bladeMat = new THREE.MeshStandardMaterial({ color: S.bladeColor, roughness: 0.22, metalness: 0.75, emissive: S.bladeGlow, emissiveIntensity: 0.3 });
+    this.bladeMat = M.steel(S.bladeColor, S.bladeGlow);
     add(sw, bladeGeo(L, S.bladeW, 0.012, S.curve), this.bladeMat, 0, 0, 0.012);
     const hl = S.hilt;
     add(sw, new THREE.CylinderGeometry(0.017, 0.019, hl, 8), M(S.grip, { tex: 'cloth', roughness: 0.7 }), 0, 0, -hl / 2, 1, 1, 1.25).rotation.x = Math.PI / 2;

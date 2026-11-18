@@ -1,0 +1,285 @@
+{
+  "note": "Measured by tests/measure-audio.mjs. Nobody listened to any of this audio in the session that produced it.",
+  "backend": "WebGPU",
+  "fps": 60,
+  "sounds": {
+    "what": "each blade sound rendered alone in an OfflineAudioContext at 48 kHz: sfx-bus signal before the master gain (0.7), compressor and ceiling; scheduled 3 ms after the event",
+    "list": [
+      {
+        "label": "whiff — Reedcutter cut through air",
+        "name": "swing",
+        "arg": null,
+        "onsetMsAfterEvent": 14.06,
+        "peakAtMs": 88.3,
+        "peak": 0.139,
+        "peakDb": -17.2,
+        "rms250msDb": -31.6,
+        "centroidHz": 3123,
+        "above2kHzPct": 63.2,
+        "flatness": 0.2275,
+        "ringMsTo30dB": 181
+      },
+      {
+        "label": "whiff — Warden blade through air",
+        "name": "bossSwing",
+        "arg": null,
+        "onsetMsAfterEvent": 24.19,
+        "peakAtMs": 122,
+        "peak": 0.229,
+        "peakDb": -12.8,
+        "rms250msDb": -29.6,
+        "centroidHz": 2461,
+        "above2kHzPct": 44.3,
+        "flatness": 0.1863,
+        "ringMsTo30dB": 225
+      },
+      {
+        "label": "normal guard",
+        "name": "guard",
+        "arg": false,
+        "onsetMsAfterEvent": 3.02,
+        "peakAtMs": 7.6,
+        "peak": 0.843,
+        "peakDb": -1.5,
+        "rms250msDb": -21.7,
+        "centroidHz": 457,
+        "above2kHzPct": 0.8,
+        "flatness": 0.0049,
+        "ringMsTo30dB": 59
+      },
+      {
+        "label": "guarded heavy (clank + scrape)",
+        "name": "guard",
+        "arg": true,
+        "onsetMsAfterEvent": 3.02,
+        "peakAtMs": 3.3,
+        "peak": 0.895,
+        "peakDb": -1,
+        "rms250msDb": -19,
+        "centroidHz": 1669,
+        "above2kHzPct": 30.9,
+        "flatness": 0.1337,
+        "ringMsTo30dB": 172
+      },
+      {
+        "label": "Glance (first)",
+        "name": "deflect",
+        "arg": 1,
+        "onsetMsAfterEvent": 3.02,
+        "peakAtMs": 6.5,
+        "peak": 1.001,
+        "peakDb": 0,
+        "rms250msDb": -19.9,
+        "centroidHz": 3247,
+        "above2kHzPct": 99.5,
+        "flatness": 0.0205,
+        "ringMsTo30dB": 184
+      },
+      {
+        "label": "Glance (third in a chain)",
+        "name": "deflect",
+        "arg": 3,
+        "onsetMsAfterEvent": 3.02,
+        "peakAtMs": 5.9,
+        "peak": 0.932,
+        "peakDb": -0.6,
+        "rms250msDb": -19.8,
+        "centroidHz": 3651,
+        "above2kHzPct": 99.7,
+        "flatness": 0.0244,
+        "ringMsTo30dB": 189
+      },
+      {
+        "label": "direct hit on the Reedcutter",
+        "name": "hitPlayer",
+        "arg": false,
+        "onsetMsAfterEvent": 6.17,
+        "peakAtMs": 8.6,
+        "peak": 0.621,
+        "peakDb": -4.1,
+        "rms250msDb": -18.7,
+        "centroidHz": 112,
+        "above2kHzPct": 0.4,
+        "flatness": 0.0856,
+        "ringMsTo30dB": 95
+      },
+      {
+        "label": "cut landing on the Warden",
+        "name": "hitBoss",
+        "arg": null,
+        "onsetMsAfterEvent": 5.33,
+        "peakAtMs": 9.9,
+        "peak": 0.445,
+        "peakDb": -7,
+        "rms250msDb": -25.2,
+        "centroidHz": 228,
+        "above2kHzPct": 1.2,
+        "flatness": 0.0156,
+        "ringMsTo30dB": 54
+      },
+      {
+        "label": "Warden guards a light cut",
+        "name": "bossBlock",
+        "arg": null,
+        "onsetMsAfterEvent": 3.02,
+        "peakAtMs": 3.2,
+        "peak": 0.483,
+        "peakDb": -6.3,
+        "rms250msDb": -27.3,
+        "centroidHz": 641,
+        "above2kHzPct": 1.4,
+        "flatness": 0.008,
+        "ringMsTo30dB": 55
+      },
+      {
+        "label": "Reaping Cut on the Warden's guard (clank + scrape)",
+        "name": "heavyBlock",
+        "arg": null,
+        "onsetMsAfterEvent": 3.02,
+        "peakAtMs": 9,
+        "peak": 0.85,
+        "peakDb": -1.4,
+        "rms250msDb": -19,
+        "centroidHz": 1834,
+        "above2kHzPct": 35.2,
+        "flatness": 0.2035,
+        "ringMsTo30dB": 190
+      },
+      {
+        "label": "Bind-Step pin (stomp + clap + scrape)",
+        "name": "counter",
+        "arg": null,
+        "onsetMsAfterEvent": 3.02,
+        "peakAtMs": 10.6,
+        "peak": 0.862,
+        "peakDb": -1.3,
+        "rms250msDb": -13.4,
+        "centroidHz": 2119,
+        "above2kHzPct": 37.1,
+        "flatness": 0.4109,
+        "ringMsTo30dB": 329
+      }
+    ]
+  },
+  "exchange": {
+    "what": "about 30 s of real-input fighting (cuts in the air, held guards, Glance attempts, cuts at the Warden, blows taken)",
+    "stats": {
+      "swings": 25,
+      "hitsDealt": 15,
+      "blocked": 8,
+      "guards": 2,
+      "deflects": 6,
+      "maxChain": 3,
+      "counters": 0,
+      "breaks": 2,
+      "finishers": 2,
+      "hitsTaken": 8,
+      "evades": 0,
+      "dodges": 0,
+      "playerBreaks": 0,
+      "cues": 2,
+      "jumps": 0,
+      "lands": 0,
+      "heavies": 0,
+      "heavyHits": 0,
+      "chargeFulls": 0,
+      "chargeBreaks": 0,
+      "drinks": 0,
+      "drinkFails": 0,
+      "drinkBreaks": 0,
+      "healed": 0
+    },
+    "eventToOnset": {
+      "what": "ms from the marker (the simulation event reaching the audio thread, started in the same call as the sound) to the first sample of that sound on the blade-only bus; the event handler runs in the same JS task as the 60 Hz simulation step that resolved the contact",
+      "paired": true,
+      "events": 64,
+      "markers": 63,
+      "contextBaseLatencyMs": 10,
+      "contextOutputLatencyMs": 40,
+      "byName": {
+        "swing": {
+          "events": 25,
+          "onsetNotFound": 3,
+          "minMs": 3,
+          "medianMs": 8.58,
+          "maxMs": 11.02
+        },
+        "hitPlayer": {
+          "events": 8,
+          "onsetNotFound": 0,
+          "minMs": 4.44,
+          "medianMs": 4.63,
+          "maxMs": 5.42
+        },
+        "hitBoss": {
+          "events": 14,
+          "onsetNotFound": 0,
+          "minMs": 3.56,
+          "medianMs": 6.27,
+          "maxMs": 6.71
+        },
+        "bossBlock": {
+          "events": 8,
+          "onsetNotFound": 0,
+          "minMs": 0.35,
+          "medianMs": 3.02,
+          "maxMs": 3.04
+        },
+        "deflect": {
+          "events": 6,
+          "onsetNotFound": 0,
+          "minMs": 3,
+          "medianMs": 3.02,
+          "maxMs": 3.02
+        },
+        "guard": {
+          "events": 2,
+          "onsetNotFound": 0,
+          "minMs": 3.02,
+          "medianMs": 3.02,
+          "maxMs": 3.02
+        }
+      }
+    },
+    "finalOutput": {
+      "what": "after compressor and soft ceiling (0.92)",
+      "bus": "mix",
+      "seconds": 30.55,
+      "rate": 48000,
+      "samples": 1466368,
+      "peak": 0.809,
+      "peakDb": -1.8,
+      "rms": 0.06457,
+      "rmsDb": -23.8,
+      "clipped": 0,
+      "windowMs": 85,
+      "winRmsDb": {
+        "min": -47.9,
+        "p10": -39.2,
+        "p50": -29,
+        "p90": -20.2,
+        "max": -11.2
+      }
+    },
+    "masterBeforeDynamics": {
+      "what": "master bus before the compressor and ceiling",
+      "bus": "pre",
+      "seconds": 30.55,
+      "rate": 48000,
+      "samples": 1466368,
+      "peak": 0.9583,
+      "peakDb": -0.4,
+      "rms": 0.05192,
+      "rmsDb": -25.7,
+      "clipped": 0,
+      "windowMs": 85,
+      "winRmsDb": {
+        "min": -51.4,
+        "p10": -42.5,
+        "p50": -32.6,
+        "p90": -22.1,
+        "max": -11.5
+      }
+    }
+  }
+}

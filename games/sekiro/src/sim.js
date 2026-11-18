@@ -223,7 +223,7 @@ export function createSim(opts = {}) {
       s.stats.guards++; s.chain = 0;
       p.stance = Math.min(C.STANCE_MAX, p.stance + h.gs); p.stanceIdle = 0;
       p.kx = fx * 2.2; p.kz = fz * 2.2;
-      ev('guard', { x: mx, z: mz });
+      ev('guard', { x: mx, z: mz, heavy: h.type === 'heavy' });
       if (p.stance >= C.STANCE_MAX) { p.state = 'broken'; p.t = 0; s.stats.playerBreaks++; ev('playerBroken', {}); }
       return;
     }

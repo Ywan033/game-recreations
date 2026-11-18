@@ -13,6 +13,7 @@ const opt = new URLSearchParams(location.hash.slice(1));
 const num = (k) => (opt.has(k) && isFinite(+opt.get(k)) ? +opt.get(k) : undefined);
 const low = opt.get('q') === 'low';
 const legacyClamp = opt.get('legacyclamp') === '1';
+const legacyCam = opt.get('legacycam') === '1'; // evidence-only: the lock-on camera as it was before the duel pass
 const $ = (id) => document.getElementById(id);
 
 const sim = createSim({ seed: num('seed'), gain: num('gain'), hurt: num('hurt') });
@@ -69,7 +70,7 @@ const fx = new Fx(scene);
 // Muted, layered clothing: slate robe over a pale under-robe for the Reedcutter; dark robe, thatch
 // mantle and hat, bone mask for the Warden.
 const PLAYER_STYLE = { kind: 'player', scale: 1, robe: 0x4a4d50, under: 0xa39d8e, collar: 0x2c3034, trouser: 0x2a2b2c, sash: 0x7a4630, leather: 0x4a3626, wrap: 0x6f6b5e, shoe: 0x3a372f, skin: 0xb89070, straw: 0x6e6242, blade: 0.82, bladeW: 0.034, curve: 0.02, hilt: 0.27, grip: 0x2a2622, bladeColor: 0xdfe6ea, bladeGlow: 0x9fb4c8, trail: 0xdfe8f2 };
-const BOSS_STYLE = { kind: 'boss', scale: 1.15, robe: 0x302e38, under: 0x626066, collar: 0x16151c, trouser: 0x1c1b21, sash: 0x345750, leather: 0x2d2c2e, wrap: 0x3e3c38, shoe: 0x242321, skin: 0x8a7460, straw: 0x6f6545, cloak: 0x232228, mask: 0xa9a391, eye: 0x3f8f84, blade: 1.22, bladeW: 0.04, curve: 0.045, hilt: 0.36, grip: 0x1c2a2a, bladeColor: 0xd6e2e8, bladeGlow: 0x8fa8c0, trail: 0xd4e6ee };
+const BOSS_STYLE = { kind: 'boss', scale: 1.15, robe: 0x302e38, under: 0x626066, collar: 0x16151c, trouser: 0x1c1b21, sash: 0x345750, leather: 0x4a4034, wrap: 0x3e3c38, shoe: 0x242321, skin: 0x9a846c, straw: 0x6f6545, cloak: 0x232228, mask: 0xa9a391, eye: 0x3f8f84, blade: 1.22, bladeW: 0.04, curve: 0.045, hilt: 0.36, grip: 0x1c2a2a, bladeColor: 0xd6e2e8, bladeGlow: 0x8fa8c0, trail: 0xd4e6ee };
 const player = new Figure(PLAYER_STYLE);
 const boss = new Figure(BOSS_STYLE);
 scene.add(player.root, boss.root, player.trail, boss.trail);
@@ -96,7 +97,9 @@ if (opt.get('rec') === '1') {
       mr.stop();
     }),
     startPcm: (bus) => sound.startPcm(bus),
-    stopPcm: (wav) => sound.stopPcm(wav),
+    stopPcm: (wav, bus) => sound.stopPcm(wav, bus),
+    // one blade sound rendered alone (offline), as base64 Float32 mono at 48 kHz — for tests/measure-audio.mjs
+    render: async (name, a) => { const d = new Uint8Array((await Sound.render(name, a)).buffer); let s = ''; for (let i = 0; i < d.length; i += 0x8000) s += String.fromCharCode.apply(null, d.subarray(i, i + 0x8000)); return btoa(s); },
   };
 }
 // faint ground rings: barely there in normal play, bright only while the Warden is Unbalanced
@@ -317,7 +320,7 @@ function handle(e) {
     case 'drinkBreak': callout('饮药被断', 'Drink interrupted — nothing spent', 'bad'); break;
     case 'drinkFail': sound.play('deny'); flaskDeny(); callout(e.empty ? '葫芦已空' : '气血已满', e.empty ? 'The gourd is empty' : 'Already at full health', 'deny'); break;
     case 'bossDeflect': callout('被拨开', 'Turned aside', 'bad'); player.kick(0.7, -1); break;
-    case 'guard': sound.play('guard'); fx.burst(e.x, y, e.z, 8, 0xd0703a, 3.5, { life: 0.3 }); cam.shake = Math.max(cam.shake, 0.12); player.kick(0.95, 0.3); boss.kick(0.2); break;
+    case 'guard': sound.play('guard', e.heavy); fx.burst(e.x, y, e.z, 8, 0xd0703a, 3.5, { life: 0.3 }); cam.shake = Math.max(cam.shake, 0.12); player.kick(0.95, 0.3); boss.kick(0.2); break;
     case 'deflect':
       sound.play('deflect', e.chain);
       // sharp beat: the Reedcutter's blade snaps out and rebounds, the Warden's is thrown wide
@@ -327,7 +330,7 @@ function handle(e) {
       cam.shake = Math.max(cam.shake, e.heavy ? 0.2 : 0.1);
       callout(e.chain > 1 ? `拨锋 ×${e.chain}` : '拨锋', e.chain > 1 ? `Glance chain ${e.chain}` : 'Glance', 'glance');
       break;
-    case 'hitPlayer': sound.play('hitPlayer'); fx.burst(e.x, y, e.z, 16, 0xff5a40, 5); cam.shake = Math.max(cam.shake, e.heavy ? 0.4 : 0.22); player.kick(e.heavy ? 1.3 : 0.8, 0.4); break;
+    case 'hitPlayer': sound.play('hitPlayer', e.heavy); fx.burst(e.x, y, e.z, 16, 0xff5a40, 5); cam.shake = Math.max(cam.shake, e.heavy ? 0.4 : 0.22); player.kick(e.heavy ? 1.3 : 0.8, 0.4); break;
     case 'playerBroken': sound.play('playerBroken'); callout('重心尽失', 'Your Balance gives way', 'bad'); break;
     case 'cue':
       sound.play('cue'); callout('紫焰', 'Violet flare — step in!', 'warn');
@@ -362,6 +365,7 @@ function handle(e) {
 
 // ---------------------------------------------------------------- camera
 const v1 = new THREE.Vector3(), v2 = new THREE.Vector3(), lastDir = new THREE.Vector3(0, 0, 1);
+const lk = { on: false, t: 0, ang: 0, ax: 0, az: 0, side: 1.9, back: 4.2, h: 2, comp: 0 }, v3 = new THREE.Vector3();
 function updateCamera(dt, t) {
   const p = sim.player, b = sim.boss;
   const want = v1, look = v2;
@@ -377,7 +381,38 @@ function updateCamera(dt, t) {
     const ps = b.state === 'phaseShift', side = ps ? 0.35 : 1, fwd = ps ? 6 : 1.2;
     want.set(b.x + (-dz / d) * 3.6 * side + dx / d * fwd, ps ? 2.3 : 1.5, b.z + (dx / d) * 3.6 * side + dz / d * fwd);
     look.set(b.x, 1.25, b.z); rate = 5;
+  } else if (cam.lock && !legacyCam) {
+    // Lock-on camera, composed in the duel's own frame instead of chasing a world-space point:
+    // a smoothed bearing (Warden -> Reedcutter), a lightly smoothed anchor on the Reedcutter, and
+    // smoothed back / side / height offsets. Circling therefore no longer drags the lens onto the
+    // line between the two fighters (the old world-space chase lagged ~1 m sideways while strafing
+    // and put the Reedcutter in front of the Warden). The side never flips; every offset is eased.
+    const dx = p.x - b.x, dz = p.z - b.z, d = Math.hypot(dx, dz);
+    const tgt = d > 0.3 ? Math.atan2(dx, dz) : lk.ang, e = (r) => 1 - Math.exp(-dt * r);
+    if (!lk.on) { lk.on = true; lk.t = 0; lk.ang = tgt; lk.ax = p.x; lk.az = p.z; }
+    lk.t += dt;
+    // (turn rate capped at 6 rad/s: when the Warden leaps or lunges past, the lens swings round instead of whipping)
+    lk.ang += Math.max(-6 * dt, Math.min(6 * dt, Math.atan2(Math.sin(tgt - lk.ang), Math.cos(tgt - lk.ang)) * e(16)));
+    // what is left of the bearing error swings the lens toward the sight line when the Reedcutter circles to the lens side; counter it below
+    const swing = Math.min(0.5, Math.max(0, -Math.atan2(Math.sin(tgt - lk.ang), Math.cos(tgt - lk.ang))));
+    lk.ax += (p.x - lk.ax) * e(11); lk.az += (p.z - lk.az) * e(11);
+    const near = 1 - Math.max(0, Math.min(1, (d - 1.2) / 2.2));
+    lk.side += (1.8 + Math.min(0.3, d * 0.05) + near * 0.45 - lk.side) * e(5);
+    lk.back += (3.0 + d * 0.22 - lk.back) * e(5);
+    lk.h += (1.7 + d * 0.06 + near * 0.5 - lk.h) * e(5);
+    const sx = Math.sin(lk.ang), sz = Math.cos(lk.ang);
+    // the anchor trails a moving Reedcutter; when that trail eats into the shoulder offset, widen it by the same amount
+    const lag = Math.max(0, (p.x - lk.ax) * -sz + (p.z - lk.az) * sx);
+    lk.comp += (lag * 0.9 + lk.back * Math.tan(swing) * 0.9 - lk.comp) * e(24); // eased, so a lunge past the Reedcutter cannot kick the lens sideways
+    const side = lk.side + lk.comp;
+    want.set(lk.ax + sx * lk.back - sz * side, lk.h + p.y * 0.45, lk.az + sz * lk.back + sx * side);
+    look.set(p.x * 0.42 + b.x * 0.58, 1.1 + p.y * 0.4, p.z * 0.42 + b.z * 0.58);
+    // entering lock-on (from the intro, free look or a finisher view) eases in; after that the lens holds its composed spot
+    rate = sim.mode === 'intro' ? 2.2 : 5 + 30 * Math.min(1, lk.t / 0.9) ** 2;
+    if (sim.mode === 'intro') lk.t = 0;
   } else if (cam.lock) {
+    // previous lock-on camera, kept only behind #legacycam=1 so tests/measure-occlusion.mjs can
+    // measure the old behaviour against the new one on the same build
     let dx = p.x - b.x, dz = p.z - b.z; const d = Math.hypot(dx, dz);
     if (d > 0.3) lastDir.set(dx / d, 0, dz / d);
     // closer and lower than before so the Warden's feet, blade and wind-up read clearly; the
@@ -397,10 +432,15 @@ function updateCamera(dt, t) {
     want.set(p.x - Math.sin(cam.yaw) * cp * 4.9, 1.45 + Math.sin(cam.pitch) * 4.9 + p.y * 0.45, p.z - Math.cos(cam.yaw) * cp * 4.9);
     look.set(p.x, 1.3 + p.y * 0.5, p.z); rate = 14;
   }
+  if (!(started && cam.lock && !legacyCam && !galFigs && !(p.state === 'finisher' || b.state === 'phaseShift' || b.state === 'dying'))) lk.on = false;
   // the camera may back a few metres into the reed belt (stalks around it lie down, see world.js)
   const r = Math.hypot(want.x, want.z), maxR = C.ARENA_R + 3.4;
   if (started && r > maxR) { want.x *= maxR / r; want.z *= maxR / r; want.y += (r - maxR) * 0.12; }
+  v3.copy(cam.pos);
   cam.pos.lerp(want, 1 - Math.exp(-dt * rate));
+  // locked on in the fight, the lens never travels faster than 26 m/s (a Bind-Step relocation or a lunge past is followed, not
+  // jumped to). Circling at 2 m already needs about 14 m/s, so a lower cap lets the Reedcutter drift in front of the Warden.
+  if (lk.on && sim.mode === 'fight' && dt > 0) { const st = cam.pos.distanceTo(v3), mx = 26 * dt; if (st > mx) cam.pos.lerpVectors(v3, cam.pos, mx / st); }
   cam.look.lerp(look, 1 - Math.exp(-dt * (rate + 3)));
   camera.position.copy(cam.pos);
   if (cam.shake > 0.002) { camera.position.x += (Math.random() - 0.5) * cam.shake; camera.position.y += (Math.random() - 0.5) * cam.shake; cam.shake *= Math.exp(-dt * 9); }
@@ -467,6 +507,36 @@ function frame() {
 
 // ---------------------------------------------------------------- read-only state probe for tests
 const ndc = (x, y, z) => { const v = new THREE.Vector3(x, y, z).project(camera); return { x: +v.x.toFixed(3), y: +v.y.toFixed(3), front: v.z < 1 }; };
+// Framing measurement (read-only): where both fighters' chests, the Warden's hands and both blade
+// tips fall on screen, and how much of the Warden's upper body is hidden behind the Reedcutter.
+// The upper body is sampled as a 3 x 4 grid (0.48 m wide, 1.2-1.95 m high, facing the lens); a
+// sample is "covered" when the sight line from the lens to it passes within 0.27 m of the
+// Reedcutter's body axis (feet to head) in front of it, and "off" when it is outside the picture.
+const fa = new THREE.Vector3(), fb = new THREE.Vector3(), fc = new THREE.Vector3(), fd = new THREE.Vector3(), fe = new THREE.Vector3();
+function segDist(p1, q1, p2, q2) {
+  const d1 = fc.subVectors(q1, p1), d2 = fd.subVectors(q2, p2), r = fe.subVectors(p1, p2);
+  const a = d1.dot(d1), e = d2.dot(d2), f = d2.dot(r), c = d1.dot(r), b = d1.dot(d2), den = a * e - b * b;
+  let s = den > 1e-9 ? Math.max(0, Math.min(1, (b * f - c * e) / den)) : 0, t = (b * s + f) / e;
+  if (t < 0) { t = 0; s = Math.max(0, Math.min(1, -c / a)); } else if (t > 1) { t = 1; s = Math.max(0, Math.min(1, (b - c) / a)); }
+  return { dist: Math.hypot(r.x + d1.x * s - d2.x * t, r.y + d1.y * s - d2.y * t, r.z + d1.z * s - d2.z * t), s };
+}
+function framing() {
+  const p = sim.player, b = sim.boss, cp = camera.position, me = camera.matrixWorld.elements;
+  const rl = Math.hypot(me[0], me[2]) || 1, rx = me[0] / rl, rz = me[2] / rl;
+  const pt = (v) => { const q = v.clone().project(camera); return { x: +q.x.toFixed(3), y: +q.y.toFixed(3), on: q.z < 1 && Math.abs(q.x) <= 1 && Math.abs(q.y) <= 1 }; };
+  const w = (o) => o.getWorldPosition(new THREE.Vector3());
+  let cover = 0, off = 0;
+  const foot = new THREE.Vector3(p.x, p.y + 0.12, p.z), top = new THREE.Vector3(p.x, p.y + 1.72, p.z);
+  for (const y of [1.2, 1.45, 1.7, 1.95]) for (const c of [-0.24, 0, 0.24]) {
+    fa.set(b.x + rx * c, y, b.z + rz * c);
+    fb.copy(fa).project(camera);
+    if (!(fb.z < 1 && Math.abs(fb.x) <= 1 && Math.abs(fb.y) <= 1)) { off++; continue; }
+    const r = segDist(cp, fa, foot, top);
+    if (r.dist < 0.27 && r.s < 0.98) cover++;
+  }
+  return { cover: +(cover / 12).toFixed(3), off: +(off / 12).toFixed(3), playerChest: pt(new THREE.Vector3(p.x, p.y + 1.3, p.z)), bossChest: pt(new THREE.Vector3(b.x, 1.5, b.z)),
+    playerTip: pt(w(player.tip)), bossTip: pt(w(boss.tip)), bossHand: pt(w(boss.armR.hand)), camDist: +Math.hypot(cp.x - p.x, cp.z - p.z).toFixed(2), legacyCam };
+}
 Object.defineProperty(window, '__game', {
   value: Object.freeze({
     get snap() {
@@ -479,7 +549,7 @@ Object.defineProperty(window, '__game', {
         dist: Math.hypot(p.x - b.x, p.z - b.z),
         nextHit: h, hitSeq: sim.hitSeq, chain: sim.chain, promptOpen: sim.promptOpen, stats: { ...sim.stats },
         camera: { lock: cam.lock, yaw: Math.atan2(cam.fwd.x, cam.fwd.z), x: cam.pos.x, y: cam.pos.y, z: cam.pos.z },
-        bossScreen: ndc(b.x, 1.3, b.z), playerScreen: ndc(p.x, 1.0, p.z),
+        bossScreen: ndc(b.x, 1.3, b.z), playerScreen: ndc(p.x, 1.0, p.z), framing: framing(),
         options: { ...sim.opts, low },
         quality: { tier: quality.tier, scale: TIER_SCALE[quality.tier], software, shadows: world.shadows, log: quality.log.slice() },
       };
