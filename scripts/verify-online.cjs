@@ -21,9 +21,19 @@ async function main() {
   }
   if (typeof check !== 'function') throw new Error('online-check.cjs must export a function');
 
-  const browser = await chromium.launch({
-    args: ['--enable-unsafe-webgpu', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'],
-  });
+  const args = ['--enable-unsafe-webgpu', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'];
+  let browser = await chromium.launch({ args });
+  // Some machines give the headless shell no WebGL 2 context; use the bundled full Chromium then.
+  {
+    const probe = await browser.newPage();
+    const ok = await probe.evaluate(() => !!document.createElement('canvas').getContext('webgl2'));
+    await probe.close();
+    if (!ok) {
+      console.log('[online] headless shell has no WebGL 2 context; using the bundled full Chromium');
+      await browser.close();
+      browser = await chromium.launch({ channel: 'chromium', args: ['--enable-unsafe-webgpu', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
+    }
+  }
   try {
     const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
     const page = await context.newPage();
